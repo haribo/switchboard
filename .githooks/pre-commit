@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Refuse a commit made directly on a permanent branch.
+#
+# main carries the stable versions: it is reached by merging develop, never by
+# committing onto it. develop is deliberately NOT guarded here — it is this
+# repository's integration branch, where work is committed. See CLAUDE.md.
+#
+# Enable with: just hooks   (git config core.hooksPath .githooks)
+
+set -euo pipefail
+
+protected="main"
+
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [ -z "$branch" ]; then
+    exit 0  # detached HEAD, or a rebase in flight: not a branch to guard
+fi
+
+for guarded in $protected; do
+    if [ "$branch" = "$guarded" ]; then
+        cat >&2 <<MSG
+
+  Refusing to commit directly on '$branch'.
+
+  '$branch' carries the stable versions and is reached by merging, not by
+  committing onto it. Work goes on develop:
+
+      git switch develop
+
+  If this commit really has to land on '$branch' — a release merge that needs
+  fixing up, a hotfix agreed beforehand — say so explicitly:
+
+      git commit --no-verify
+
+MSG
+        exit 1
+    fi
+done
+
+exit 0

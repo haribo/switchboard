@@ -37,7 +37,9 @@ running on a machine nobody is using.
 
 ## Branches
 
-`develop` is where work lands. `main` carries the stable versions. A build is
+`develop` is where work lands. `main` carries the stable versions, and a
+pre-commit hook refuses a commit made directly on it — run `just hooks` once
+after cloning, or the file is just a sign with no door behind it. A build is
 stamped with `git describe --tags --always --dirty`, so `just health` always says
 which commit is answering — and says `-dirty` when it is not one.
 

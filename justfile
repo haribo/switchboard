@@ -35,6 +35,11 @@ test:
 race:
     go test -race ./...
 
+# Point git at .githooks, so the guards in it actually run
+hooks:
+    git config core.hooksPath .githooks
+    @echo "hooks enabled: $(git config core.hooksPath)"
+
 # Formatting and static analysis
 lint:
     gofmt -l ./cmd ./internal
