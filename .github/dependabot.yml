@@ -1,0 +1,26 @@
+# Dependency updates arrive as pull requests, without anyone remembering to look.
+#
+# Every packaging ecosystem this repository carries needs an entry here. Adding
+# one — a Dockerfile, a package-lock.json — without adding it below leaves it
+# silently unwatched, which reports green while updating nothing.
+version: 2
+
+updates:
+  # Go modules: the service and its dependencies.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+
+  # The actions used by the workflows below. They have no vulnerability
+  # scanner of their own, so keeping them current is what covers them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore

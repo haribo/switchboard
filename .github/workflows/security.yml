@@ -1,0 +1,47 @@
+# Scans that must run where they cannot be skipped.
+#
+# A pre-commit hook is opt-in per clone and per machine, and nothing in the
+# repository can prove it is active anywhere. These run on every push, for
+# everyone, including a contributor who cloned this morning.
+name: security
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  schedule:
+    # A vulnerability can be published long after the code stopped changing.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks reads history: a secret is not undone by a later commit,
+          # it stays in the history and has to be rotated.
+          fetch-depth: 0
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  vulnerabilities:
+    name: known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Scan Go dependencies
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
