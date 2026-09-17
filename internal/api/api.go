@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -114,7 +115,51 @@ func New(st *store.Store, cfg Config, page fs.FS) *Server {
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A session name is checked here, ahead of routing, because the router
+	// answers first otherwise: a name carrying a slash lands on a path with no
+	// handler, and the caller gets "405 Method Not Allowed" — which says
+	// nothing about what it did wrong, to a caller that is usually a program.
+	if name, ok := strings.CutPrefix(r.URL.Path, sessionsPrefix); ok {
+		if err := validSessionName(name); err != nil {
+			fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	s.mux.ServeHTTP(w, r)
+}
+
+const sessionsPrefix = "/v1/sessions/"
+
+// maxSessionName bounds a name so it stays readable in the PO's table.
+const maxSessionName = 64
+
+// sessionName is what a session may be called: the shape of the names Claude
+// Code gives sessions, and nothing that needs escaping in a path.
+var sessionName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validSessionName reports why a name cannot be used, in the shape of every
+// other message this API answers with.
+func validSessionName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("a session name is required")
+	case len(name) > maxSessionName:
+		return fmt.Errorf("a session name is at most %d characters — got %d", maxSessionName, len(name))
+	case !sessionName.MatchString(name):
+		return fmt.Errorf("a session name holds letters, digits, '-', '_' or '.' — got %q", clip(name, 40))
+	}
+	return nil
+}
+
+// clip keeps a rejected value short in the answer it is quoted back in.
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
 
 // route is one entry of the routing table. The table is the single place a
 // route is declared, so the specification can be checked against it.
@@ -276,9 +321,9 @@ type sessionRequest struct {
 }
 
 func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if name == "" {
-		fail(w, http.StatusBadRequest, "session name is required")
+	name := r.PathValue("name")
+	if err := validSessionName(name); err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var req sessionRequest
@@ -300,9 +345,9 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 // retireSession removes a session's row. Its events stay — they are the trace of
 // decisions, not the session's property.
 func (s *Server) retireSession(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if name == "" {
-		fail(w, http.StatusBadRequest, "session name is required")
+	name := r.PathValue("name")
+	if err := validSessionName(name); err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	err := s.st.RetireSession(name)

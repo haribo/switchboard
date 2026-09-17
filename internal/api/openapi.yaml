@@ -58,11 +58,7 @@ paths:
         or the issue changes, so a repeated heartbeat does not reset it: the PO's
         table must be able to say "40 min", not "just now" five times a minute.
       parameters:
-        - name: name
-          in: path
-          required: true
-          description: The session's name, e.g. `acme-dev3`. Given by the caller, never guessed.
-          schema: { type: string, examples: ["acme-dev3"] }
+        - $ref: "#/components/parameters/SessionName"
       requestBody:
         required: true
         content:
@@ -100,10 +96,7 @@ paths:
         `PUT /v1/sessions/{name}` starts a fresh row — a session relaunched on
         Saturday does not inherit last Tuesday's "since".
       parameters:
-        - name: name
-          in: path
-          required: true
-          schema: { type: string, examples: ["acme-dev3"] }
+        - $ref: "#/components/parameters/SessionName"
       responses:
         "204":
           description: The row is gone.
@@ -509,6 +502,23 @@ paths:
 
 components:
   parameters:
+    SessionName:
+      name: name
+      in: path
+      required: true
+      description: |
+        The session's name. Given by the caller, never guessed — only its shape
+        is checked: letters, digits, `-`, `_` or `.`, at most 64 characters.
+
+        A name outside that shape answers `400` naming the rule. It is checked
+        before routing, because a name carrying a slash would otherwise land on
+        a path with no handler and come back as `405 Method Not Allowed`, which
+        tells an automated caller nothing.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]+$"
+        maxLength: 64
+        examples: ["acme-dev3"]
     EventId:
       name: id
       in: path

@@ -699,3 +699,55 @@ func TestRetiringAnUnknownSessionIsNotFound(t *testing.T) {
 	h := newHarness(t)
 	h.mustDo("DELETE", "/v1/sessions/acme-dev9", nil, http.StatusNotFound)
 }
+
+// A name that is not path-safe used to reach the router before any validation
+// and come back as "405 Method Not Allowed", which tells an automated caller
+// nothing about what it did wrong. Issue #3.
+func TestAnInvalidSessionNameSaysWhatIsWrong(t *testing.T) {
+	h := newHarness(t)
+	body := map[string]string{"status": "active"}
+
+	for _, c := range []struct{ name, path, why string }{
+		{"a slash", "/v1/sessions/a/b", "lands on a path with no handler"},
+		{"a traversal", "/v1/sessions/../../etc/passwd", "the reported case"},
+		{"empty", "/v1/sessions/", "no name at all"},
+		{"a space", "/v1/sessions/mon nom", "accepted silently before"},
+	} {
+		res, out := h.do("PUT", c.path, body)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s (%s): status = %d, want 400", c.name, c.why, res.StatusCode)
+			continue
+		}
+		msg, _ := out["error"].(string)
+		if !strings.Contains(msg, "session name") {
+			t.Errorf("%s: message %q does not name the rule", c.name, msg)
+		}
+	}
+}
+
+func TestAValidSessionNameIsUnaffected(t *testing.T) {
+	h := newHarness(t)
+	for _, name := range []string{"acme-dev1", "acme_dev1", "dev.1", "D3V", "a"} {
+		h.mustDo("PUT", "/v1/sessions/"+name, map[string]string{"status": "active"}, http.StatusOK)
+	}
+	// Retiring uses the same path, so it is guarded the same way.
+	h.mustDo("DELETE", "/v1/sessions/acme-dev1", nil, http.StatusNoContent)
+	res, _ := h.do("DELETE", "/v1/sessions/a/b", nil)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("DELETE with a bad name = %d, want 400", res.StatusCode)
+	}
+}
+
+// The name is the caller's to give; only its shape is checked.
+func TestATooLongSessionNameIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/"+strings.Repeat("a", 64),
+		map[string]string{"status": "active"}, http.StatusOK)
+	res, out := h.do("PUT", "/v1/sessions/"+strings.Repeat("a", 65), map[string]string{"status": "active"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("65 characters = %d, want 400", res.StatusCode)
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "64") {
+		t.Fatalf("message %q does not give the limit", msg)
+	}
+}
