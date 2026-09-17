@@ -142,6 +142,7 @@ func (s *Server) table() []route {
 		{http.MethodPost, "/v1/events/{id}/reroute", s.reroute},
 
 		{http.MethodPut, "/v1/sessions/{name}", s.putSession},
+		{http.MethodDelete, "/v1/sessions/{name}", s.retireSession},
 
 		// The manager's side.
 		{http.MethodGet, "/v1/state", s.state},
@@ -294,6 +295,29 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, sess)
+}
+
+// retireSession removes a session's row. Its events stay — they are the trace of
+// decisions, not the session's property.
+func (s *Server) retireSession(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		fail(w, http.StatusBadRequest, "session name is required")
+		return
+	}
+	err := s.st.RetireSession(name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such session")
+		return
+	case errors.Is(err, store.ErrStillWaiting):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- answers ----------------------------------------------------------------

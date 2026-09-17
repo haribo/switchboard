@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -414,5 +415,106 @@ func TestWithdrawingTwiceIsRefused(t *testing.T) {
 
 	if _, err := s.Withdraw(e.ID, "acme-dev1"); !errors.Is(err, ErrNotOpen) {
 		t.Fatalf("err = %v, want ErrNotOpen", err)
+	}
+}
+
+// A typo becomes a permanent row, and a session stopped for a few days keeps
+// its line. The table is useful because it is short and stable. Issue #2.
+func TestRetiringASessionRemovesItsRow(t *testing.T) {
+	s, _, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusActive, "150", "CSV export")
+	s.SaveSession("acme-dev33", StatusActive, "", "") // the typo
+
+	if err := s.RetireSession("acme-dev33"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	sessions, _ := s.Sessions()
+	if len(sessions) != 1 || sessions[0].Name != "acme-dev3" {
+		t.Fatalf("sessions = %+v, want only the real one", sessions)
+	}
+}
+
+// Events are the trace of decisions, not the session's property.
+func TestARetiredSessionsEventsSurvive(t *testing.T) {
+	s, now, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusActive, "150", "")
+	e, _ := s.AddEvent(Event{Author: "acme-dev3", Kind: KindQuestion, Audience: AudiencePO, Title: "Which date format?"})
+	s.AddReply(e.ID, "po", "ISO 8601", "")
+
+	*now = base.Add(time.Hour)
+	if err := s.RetireSession("acme-dev3"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	got, err := s.Event(e.ID)
+	if err != nil {
+		t.Fatalf("the event went with the row: %v", err)
+	}
+	if got.Author != "acme-dev3" || got.Reply == nil || got.Reply.Text != "ISO 8601" {
+		t.Fatalf("event after retiring = %+v, want it intact with its answer", got)
+	}
+}
+
+// Retiring a session with open asks would leave the PO holding cards whose
+// author no longer exists.
+func TestASessionWithOpenAsksCannotBeRetired(t *testing.T) {
+	s, _, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusWaiting, "150", "")
+	e, _ := s.AddEvent(Event{Author: "acme-dev3", Kind: KindQuestion, Audience: AudiencePO, Title: "Tab or modal?"})
+
+	err := s.RetireSession("acme-dev3")
+	if !errors.Is(err, ErrStillWaiting) {
+		t.Fatalf("err = %v, want ErrStillWaiting", err)
+	}
+	if !strings.Contains(err.Error(), "withdraw") {
+		t.Fatalf("the message does not say what to do about it: %v", err)
+	}
+	if sessions, _ := s.Sessions(); len(sessions) != 1 {
+		t.Fatal("the row went away despite the refusal")
+	}
+
+	// Withdrawing the ask clears the way — the two features compose.
+	if _, err := s.Withdraw(e.ID, "acme-dev3"); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if err := s.RetireSession("acme-dev3"); err != nil {
+		t.Fatalf("retire after withdrawing: %v", err)
+	}
+}
+
+// An info waits on nobody, so it does not hold a session back.
+func TestAnInfoDoesNotBlockRetirement(t *testing.T) {
+	s, _, _ := testStore(t)
+	s.SaveSession("acme-dev5", StatusIdle, "", "")
+	s.AddEvent(Event{Author: "acme-dev5", Kind: KindInfo, Title: "gate finished, 822 tests green"})
+
+	if err := s.RetireSession("acme-dev5"); err != nil {
+		t.Fatalf("an info blocked retirement: %v", err)
+	}
+}
+
+// A session relaunched on Saturday should not inherit last Tuesday's "since".
+func TestTheSameNameComesBackOnAFreshRow(t *testing.T) {
+	s, now, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusActive, "150", "CSV export")
+	s.RetireSession("acme-dev3")
+
+	*now = base.Add(48 * time.Hour)
+	back, err := s.SaveSession("acme-dev3", StatusActive, "151", "migration")
+	if err != nil {
+		t.Fatalf("save after retiring: %v", err)
+	}
+	if !back.SinceAt.Equal(*now) {
+		t.Fatalf("since = %v, want the moment it came back", back.SinceAt)
+	}
+	if back.Issue != "151" || back.Detail != "migration" {
+		t.Fatalf("the resurrected row carried old work: %+v", back)
+	}
+}
+
+func TestRetiringASessionThatIsNotThereIsNotFound(t *testing.T) {
+	s, _, _ := testStore(t)
+	if err := s.RetireSession("acme-dev9"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }

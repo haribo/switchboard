@@ -169,6 +169,58 @@ func (s *Store) Sessions() ([]Session, error) {
 	return out, rows.Err()
 }
 
+// ErrStillWaiting is returned when a session cannot be retired because it still
+// has asks on somebody's plate.
+var ErrStillWaiting = errors.New("session still has open asks")
+
+// RetireSession removes a session's row from the table.
+//
+// Its events stay: they are the trace of decisions, and deleting them would
+// rewrite what was decided because the session that asked has gone. The page
+// renders an ask by its author's name, not by looking the row up, so a card
+// outlives the row that raised it.
+//
+// A session with open asks is refused. Retiring it would leave the PO holding
+// cards whose author no longer exists, and an answer nobody is waiting to read.
+// Answer them, or withdraw them, then retire.
+//
+// Retiring is not final: the same name on the next save starts a fresh row —
+// a session relaunched on Saturday should not inherit last Tuesday's "since".
+func (s *Store) RetireSession(name string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT count(*) FROM sessions WHERE name = ?`, name).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+
+	var open int
+	if err := tx.QueryRow(
+		`SELECT count(*) FROM events WHERE author = ? AND state = 'open' AND kind <> 'info'`,
+		name).Scan(&open); err != nil {
+		return err
+	}
+	if open > 0 {
+		return fmt.Errorf("%w: %d still open — answer or withdraw them first", ErrStillWaiting, open)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE name = ?`, name); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notify()
+	return nil
+}
+
 // --- events -----------------------------------------------------------------
 
 // AddEvent stores a new event and returns it, id filled in.

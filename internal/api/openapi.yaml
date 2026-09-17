@@ -76,6 +76,49 @@ paths:
               schema: { $ref: "#/components/schemas/Session" }
         "400": { $ref: "#/components/responses/BadRequest" }
 
+    delete:
+      tags: [sessions]
+      operationId: retireSession
+      summary: Retire a session, removing its row
+      description: |
+        The table is useful because it is short and stable — every dev keeps the
+        same line all day. Rows that cannot leave erode that: a typo
+        (`--session dev33`) stays for the life of the database, and a session
+        stopped for a few days sits there as `idle` until the PO learns to skip
+        lines.
+
+        **Its events stay.** They are the trace of decisions, and deleting them
+        would rewrite what was decided because the session that asked has gone.
+        An ask carries its author's name, so a card outlives the row that raised
+        it and the page renders it unchanged.
+
+        **A session with open asks is refused.** Retiring it would leave the PO
+        holding cards whose author no longer exists, and an answer nobody is
+        waiting to read. Answer them, or withdraw them, then retire.
+
+        **Retiring is not final.** The same name on the next
+        `PUT /v1/sessions/{name}` starts a fresh row — a session relaunched on
+        Saturday does not inherit last Tuesday's "since".
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, examples: ["acme-dev3"] }
+      responses:
+        "204":
+          description: The row is gone.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: No session by that name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The session still has open asks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/events:
     post:
       tags: [events]

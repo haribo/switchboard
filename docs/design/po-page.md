@@ -37,6 +37,17 @@ a link that leads nowhere is worse than no link.
 text in the title attribute. Every row keeps the same height, so the table stays
 scannable however long a session's note runs.
 
+**A row can leave.** A session is retired with `DELETE /v1/sessions/{name}`,
+which is what keeps the table short: a typo (`--session dev33`) would otherwise
+hold a line for the life of the database, and a dev stopped for a few days would
+sit there as `idle` until the PO learned to skip lines.
+
+What it published stays. An ask carries its author's name and the card renders
+from that, not from a lookup in the table — so a card outlives the row that
+raised it, and the page shows it unchanged. A session with open asks is refused
+retirement: answering or withdrawing them first is what stops the PO holding a
+card whose author no longer exists.
+
 **The order is always by name.** Every dev keeps the same line all day, so the PO
 learns where to look instead of reading. Sorting by urgency was considered and
 turned down: it puts what matters on top, but it makes rows jump every time a

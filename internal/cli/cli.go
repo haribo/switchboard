@@ -33,6 +33,7 @@ const usage = `switchboard — coordination for parallel sessions
   ack      mark as read what only had to be read
   undo     take back an answer just given
   withdraw close an open ask that turned out not to need an answer
+  retire   remove a session's row from the table
   watch    the grouped signal: one line when a batch needs handling
   db       look after the database: status, backup, migrate
   version  what this binary is
@@ -68,6 +69,8 @@ func Run(args []string) int {
 		err = undo(args[1:])
 	case "withdraw":
 		err = withdraw(args[1:])
+	case "retire":
+		err = retire(args[1:])
 	case "watch":
 		err = watch(args[1:])
 	case "db":
@@ -234,6 +237,25 @@ func state(args []string) error {
 		return err
 	}
 	fmt.Printf("%s: %s%s\n", out.Name, out.Status, issueSuffix(out.Issue))
+	return nil
+}
+
+// retire removes a session's row. Its events stay.
+func retire(args []string) error {
+	fs, server := flags("retire")
+	session := fs.String("session", "", "session to retire (required)")
+	rest := parse(fs, args)
+	name := *session
+	if name == "" && len(rest) == 1 {
+		name = rest[0] // switchboard retire acme-dev3
+	}
+	if name == "" {
+		return errors.New("--session is required")
+	}
+	if _, err := newClient(*server).call(http.MethodDelete, "/v1/sessions/"+name, nil, nil); err != nil {
+		return err
+	}
+	fmt.Printf("%s retired — its events are kept\n", name)
 	return nil
 }
 

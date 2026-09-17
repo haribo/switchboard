@@ -98,6 +98,9 @@ switchboard event --from acme-dev3 --kind blocked --title "Migration failing on 
 
 # never mind — I found the answer myself
 switchboard withdraw "$id" --as acme-dev3
+
+# I am done for good: take my line off the table (my events stay)
+switchboard retire acme-dev3
 ```
 
 `await` exits **3** when the ask was withdrawn instead of answered, so a session

@@ -649,3 +649,53 @@ func TestTheManagerCanWithdrawAnybodysAsk(t *testing.T) {
 		t.Fatalf("pending = %v, want the withdrawn ask to stop counting", got["pending"])
 	}
 }
+
+// A retired session leaves the table; what it published stays readable. Issue #2.
+func TestARetiredSessionLeavesThePageButItsEventsRemain(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3",
+		map[string]string{"status": "active", "issue": "150"}, http.StatusOK)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev3", "kind": "info", "title": "e2e gate finished",
+	}, http.StatusCreated)
+	id := itoa(int64(created["id"].(float64)))
+
+	h.mustDo("DELETE", "/v1/sessions/acme-dev3", nil, http.StatusNoContent)
+
+	po := h.mustDo("GET", "/v1/po", nil, http.StatusOK)
+	if got := len(list(po["sessions"])); got != 0 {
+		t.Fatalf("sessions = %d, want the row gone", got)
+	}
+	// The event is still readable, and still carries the name that raised it —
+	// which is what the page renders, so it does not need the row.
+	got := h.mustDo("GET", "/v1/events/"+id, nil, http.StatusOK)
+	if got["author"] != "acme-dev3" {
+		t.Fatalf("author = %v, want it kept", got["author"])
+	}
+	if infos := list(po["infos"]); len(infos) != 1 {
+		t.Fatalf("infos = %d, want the event still shown", len(infos))
+	}
+}
+
+func TestRetiringIsRefusedWhileAsksAreOpen(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "waiting"}, http.StatusOK)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev3", "kind": "question", "audience": "po", "title": "Tab or modal?",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+
+	h.mustDo("DELETE", "/v1/sessions/acme-dev3", nil, http.StatusConflict)
+	if got := len(list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])); got != 1 {
+		t.Fatal("the row went despite the refusal")
+	}
+
+	// Withdrawing clears the way.
+	h.mustDo("POST", path+"/withdraw", map[string]string{"author": "acme-dev3"}, http.StatusOK)
+	h.mustDo("DELETE", "/v1/sessions/acme-dev3", nil, http.StatusNoContent)
+}
+
+func TestRetiringAnUnknownSessionIsNotFound(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("DELETE", "/v1/sessions/acme-dev9", nil, http.StatusNotFound)
+}
