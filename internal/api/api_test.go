@@ -730,11 +730,13 @@ func TestAValidSessionNameIsUnaffected(t *testing.T) {
 	for _, name := range []string{"acme-dev1", "acme_dev1", "dev.1", "D3V", "a"} {
 		h.mustDo("PUT", "/v1/sessions/"+name, map[string]string{"status": "active"}, http.StatusOK)
 	}
-	// Retiring uses the same path, so it is guarded the same way.
 	h.mustDo("DELETE", "/v1/sessions/acme-dev1", nil, http.StatusNoContent)
+	// Retiring is deliberately not name-checked — a row that exists must always
+	// be removable. A name with a slash could never have been created, so there
+	// is simply nothing there.
 	res, _ := h.do("DELETE", "/v1/sessions/a/b", nil)
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("DELETE with a bad name = %d, want 400", res.StatusCode)
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE with a name nothing could have been created under = %d, want 404", res.StatusCode)
 	}
 }
 
@@ -750,4 +752,27 @@ func TestATooLongSessionNameIsRefused(t *testing.T) {
 	if msg, _ := out["error"].(string); !strings.Contains(msg, "64") {
 		t.Fatalf("message %q does not give the limit", msg)
 	}
+}
+
+// Names were only validated from #3 onwards, so a database can hold a row the
+// current rule would reject. Refusing to retire it would make exactly the
+// permanent row #2 exists to remove — and would leave it on the PO's table with
+// no way out.
+func TestASessionWhoseNameIsNowInvalidCanStillBeRetired(t *testing.T) {
+	h := newHarness(t)
+	// Straight into the store, the way a pre-#3 PUT would have landed.
+	if _, err := h.st.SaveSession("mon nom", "active", "", ""); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if got := len(list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])); got != 1 {
+		t.Fatal("the seeded row is not on the page")
+	}
+
+	h.mustDo("DELETE", "/v1/sessions/mon nom", nil, http.StatusNoContent)
+
+	if got := len(list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])); got != 0 {
+		t.Fatal("the row is still there — it cannot be cleaned up")
+	}
+	// Creating it again is still refused: the rule applies to new names.
+	h.mustDo("PUT", "/v1/sessions/mon nom", map[string]string{"status": "active"}, http.StatusBadRequest)
 }

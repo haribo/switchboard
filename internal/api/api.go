@@ -120,10 +120,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// answers first otherwise: a name carrying a slash lands on a path with no
 	// handler, and the caller gets "405 Method Not Allowed" — which says
 	// nothing about what it did wrong, to a caller that is usually a program.
-	if name, ok := strings.CutPrefix(r.URL.Path, sessionsPrefix); ok {
-		if err := validSessionName(name); err != nil {
-			fail(w, http.StatusBadRequest, err.Error())
-			return
+	//
+	// Only on the call that creates a row. Retiring one must work whatever it
+	// is called: names were unchecked before this rule existed, and a row the
+	// current rule rejects would otherwise be stuck on the PO's table for good
+	// — the permanent row that retiring exists to remove.
+	if r.Method == http.MethodPut {
+		if name, ok := strings.CutPrefix(r.URL.Path, sessionsPrefix); ok {
+			if err := validSessionName(name); err != nil {
+				fail(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 	}
 	s.mux.ServeHTTP(w, r)
@@ -345,9 +352,11 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 // retireSession removes a session's row. Its events stay — they are the trace of
 // decisions, not the session's property.
 func (s *Server) retireSession(w http.ResponseWriter, r *http.Request) {
+	// Deliberately not validSessionName: see ServeHTTP. A row that exists can
+	// always be removed, whatever it is called.
 	name := r.PathValue("name")
-	if err := validSessionName(name); err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
+	if name == "" {
+		fail(w, http.StatusBadRequest, "a session name is required")
 		return
 	}
 	err := s.st.RetireSession(name)
