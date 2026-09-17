@@ -32,6 +32,7 @@ const usage = `switchboard — coordination for parallel sessions
   ask      put a question to the PO
   ack      mark as read what only had to be read
   undo     take back an answer just given
+  withdraw close an open ask that turned out not to need an answer
   watch    the grouped signal: one line when a batch needs handling
   db       look after the database: status, backup, migrate
   version  what this binary is
@@ -65,6 +66,8 @@ func Run(args []string) int {
 		err = ack(args[1:])
 	case "undo":
 		err = undo(args[1:])
+	case "withdraw":
+		err = withdraw(args[1:])
 	case "watch":
 		err = watch(args[1:])
 	case "db":
@@ -80,10 +83,33 @@ func Run(args []string) int {
 		return 2
 	}
 	if err != nil {
+		var w withdrawnError
+		if errors.As(err, &w) {
+			// Not a failure: the ask was closed without an answer. A distinct
+			// code lets a caller branch without parsing the message.
+			fmt.Println(w.Error())
+			return ExitWithdrawn
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
 	return 0
+}
+
+// ExitWithdrawn is the exit code of `await` when the ask was withdrawn instead
+// of answered. A session that blocked on its own question has to tell the two
+// apart, or it resumes as if it had a verdict.
+const ExitWithdrawn = 3
+
+// withdrawnError reports an ask that was closed without an answer.
+type withdrawnError struct {
+	id    int64
+	title string
+	by    string
+}
+
+func (e withdrawnError) Error() string {
+	return fmt.Sprintf("withdrawn: %q (event %d, by %s) — no answer is coming, carry on", e.title, e.id, e.by)
 }
 
 // repeated collects a flag given more than once (--option A --option B).
@@ -281,6 +307,9 @@ func waitReply(c *client, id int64, timeout time.Duration) error {
 			fmt.Println(answerLine(e))
 			return nil
 		}
+		if got && e.State == store.StateWithdrawn {
+			return withdrawnError{id: e.ID, title: e.Title, by: e.ClosedBy}
+		}
 	}
 }
 
@@ -453,6 +482,26 @@ func undo(args []string) error {
 	if res.WasRead {
 		fmt.Printf("%s had already read it: raised to the manager as #%d\n", res.Event.Author, res.CatchUpID)
 	}
+	return nil
+}
+
+// withdraw closes an open ask that no longer needs an answer.
+func withdraw(args []string) error {
+	fs, server := flags("withdraw")
+	as := fs.String("as", "", "who is withdrawing it: the event's author, or manager (required)")
+	id, err := oneID(parse(fs, args))
+	if err != nil {
+		return err
+	}
+	if *as == "" {
+		return errors.New("--as is required: someone is accountable for the card disappearing")
+	}
+	var e store.Event
+	if _, err := newClient(*server).call(http.MethodPost,
+		fmt.Sprintf("/v1/events/%d/withdraw", id), map[string]string{"author": *as}, &e); err != nil {
+		return err
+	}
+	fmt.Printf("event %d withdrawn by %s\n", e.ID, e.ClosedBy)
 	return nil
 }
 

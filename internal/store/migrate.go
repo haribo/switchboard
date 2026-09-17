@@ -75,6 +75,15 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		version: 2,
+		name:    "record who withdrew an event",
+		stmts: []string{
+			// Who closed an event without answering it. Someone has to be
+			// accountable for a card vanishing from under the reader.
+			`ALTER TABLE events ADD COLUMN closed_by TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // SchemaTarget is the schema version this binary expects.

@@ -537,11 +537,13 @@ function renderAsks(items) {
     const input = card.querySelector("input");
     const busy = input && (input.value.trim() !== "" || document.activeElement === input);
     if (!busy) { card.remove(); cards.delete(id); continue; }
-    // Somebody answered elsewhere while the PO was typing. Say so rather than
-    // pull the card out from under them.
+    // The ask left the list while the PO was typing into it — answered by
+    // somebody else, or withdrawn by its author. The page cannot tell which,
+    // and says neither: it states what is certain, keeps what was typed, and
+    // lets the PO close the card themselves.
     if (!card.querySelector(".note")) {
       for (const b of card.querySelectorAll("button")) b.disabled = true;
-      const note = el("p", "note", "This one was handled elsewhere. ");
+      const note = el("p", "note", "This is no longer waiting on you. ");
       const close = el("button", null, "Close");
       close.type = "button";
       close.disabled = false;

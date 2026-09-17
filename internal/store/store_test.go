@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -337,5 +338,81 @@ func TestAnsweredWithinListsOnlyWhatIsStillUndoable(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != fresh.ID {
 		t.Fatalf("undoable = %+v, want only the recent one", got)
+	}
+}
+
+// An ask sometimes answers itself: the dev finds the answer after publishing
+// the question. Leaving the card up makes the PO decide something that no
+// longer means anything. Issue #1.
+func TestAnAuthorCanWithdrawTheirOwnOpenAsk(t *testing.T) {
+	s, now, _ := testStore(t)
+	e, _ := s.AddEvent(Event{Author: "acme-dev1", Kind: KindQuestion, Audience: AudiencePO, Title: "Tab or modal?"})
+
+	*now = base.Add(time.Minute)
+	got, err := s.Withdraw(e.ID, "acme-dev1")
+	if err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if got.State != StateWithdrawn {
+		t.Fatalf("state = %q, want %q", got.State, StateWithdrawn)
+	}
+	if got.ClosedBy != "acme-dev1" {
+		t.Fatalf("closed_by = %q, want the session that withdrew it", got.ClosedBy)
+	}
+	if got.ClosedAt == nil {
+		t.Fatal("a withdrawn event has no closing time")
+	}
+	if open, _ := s.OpenEvents(AudiencePO); len(open) != 0 {
+		t.Fatal("the withdrawn ask is still on the PO's plate")
+	}
+	// And it stops counting towards the manager's wake-up.
+	if items, _ := s.PendingFor(AudiencePO); len(items) != 0 {
+		t.Fatalf("pending = %d, want 0", len(items))
+	}
+}
+
+// Dispatching is the manager's job, so they can withdraw anybody's ask.
+func TestTheManagerCanWithdrawAnyOpenAsk(t *testing.T) {
+	s, _, _ := testStore(t)
+	e, _ := s.AddEvent(Event{Author: "acme-dev2", Kind: KindQuestion, Title: "Which label?"})
+
+	if _, err := s.Withdraw(e.ID, AudienceManager); err != nil {
+		t.Fatalf("manager withdraw: %v", err)
+	}
+}
+
+func TestSomebodyElseCannotWithdrawYourAsk(t *testing.T) {
+	s, _, _ := testStore(t)
+	e, _ := s.AddEvent(Event{Author: "acme-dev1", Kind: KindQuestion, Title: "Which label?"})
+
+	if _, err := s.Withdraw(e.ID, "acme-dev2"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("err = %v, want ErrNotAllowed", err)
+	}
+	if got, _ := s.Event(e.ID); got.State != StateOpen {
+		t.Fatalf("state = %q, want it untouched", got.State)
+	}
+}
+
+// Taking an answer back is Undo; the two must not overlap.
+func TestAnAnsweredEventCannotBeWithdrawn(t *testing.T) {
+	s, _, _ := testStore(t)
+	e, _ := s.AddEvent(Event{Author: "acme-dev1", Kind: KindQuestion, Audience: AudiencePO, Title: "Which label?"})
+	s.AddReply(e.ID, "po", "Save", "")
+
+	if _, err := s.Withdraw(e.ID, "acme-dev1"); !errors.Is(err, ErrNotOpen) {
+		t.Fatalf("err = %v, want ErrNotOpen", err)
+	}
+	if got, _ := s.Event(e.ID); got.State != StateAnswered || got.Reply == nil {
+		t.Fatalf("the answer was disturbed: %+v", got)
+	}
+}
+
+func TestWithdrawingTwiceIsRefused(t *testing.T) {
+	s, _, _ := testStore(t)
+	e, _ := s.AddEvent(Event{Author: "acme-dev1", Kind: KindQuestion, Title: "Which label?"})
+	s.Withdraw(e.ID, "acme-dev1")
+
+	if _, err := s.Withdraw(e.ID, "acme-dev1"); !errors.Is(err, ErrNotOpen) {
+		t.Fatalf("err = %v, want ErrNotOpen", err)
 	}
 }

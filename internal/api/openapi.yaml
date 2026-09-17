@@ -245,6 +245,61 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/events/{id}/withdraw:
+    post:
+      tags: [events]
+      operationId: withdrawEvent
+      summary: Withdraw an open ask that no longer needs an answer
+      description: |
+        An ask sometimes answers itself: the dev is required to check the board
+        before escalating, so it occasionally finds the answer after publishing
+        the question, and the manager hits the same case when an issue already
+        records the decision. Leaving the card up makes the PO decide something
+        that no longer means anything.
+
+        The **author** may withdraw their own ask; the **manager** may withdraw
+        any of them, because dispatching is their job. Who did it is recorded in
+        `closed_by` — somebody is accountable for a card disappearing from under
+        the reader.
+
+        An **answered** event is refused: taking an answer back is
+        `POST /v1/events/{id}/undo`, and the two must not overlap.
+
+        A session blocked in `GET /v1/events/{id}/reply` returns at once, with
+        the event in state `withdrawn` and no `reply` — which is how it tells a
+        withdrawal from a verdict.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [author]
+              properties:
+                author:
+                  type: string
+                  description: Who is withdrawing it. The event's author, or `manager`.
+      responses:
+        "200":
+          description: The event, withdrawn.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: Not the author, and not the manager.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The event is not open — answered, withdrawn or done already.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/events/{id}/reroute:
     post:
       tags: [manager]
@@ -476,7 +531,10 @@ components:
       description: |
         `open` until it is answered or read. `answered` once an answer exists;
         an undo puts it back to `open`. `done` for what only had to be read.
-      enum: [open, answered, done]
+        `withdrawn` for an ask closed without an answer, because it turned out
+        not to need one — distinct from `done`, which means it only had to be
+        read.
+      enum: [open, answered, done, withdrawn]
 
     SessionStatus:
       type: string
@@ -609,6 +667,9 @@ components:
         state: { $ref: "#/components/schemas/EventState" }
         created_at: { type: string, format: date-time }
         closed_at: { type: string, format: date-time }
+        closed_by:
+          type: string
+          description: Who withdrew it. Present only on a withdrawn event.
         reply: { $ref: "#/components/schemas/Reply" }
       required: [id, author, role, kind, title, audience, state, created_at]
 

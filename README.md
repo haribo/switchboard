@@ -95,7 +95,13 @@ switchboard event --from acme-dev3 --kind validation --issue 142 \
 
 # I am actually stopped
 switchboard event --from acme-dev3 --kind blocked --title "Migration failing on the test database"
+
+# never mind — I found the answer myself
+switchboard withdraw "$id" --as acme-dev3
 ```
+
+`await` exits **3** when the ask was withdrawn instead of answered, so a session
+can tell "no answer is coming" from a verdict without reading the message.
 
 `--wait 2h` on `event` publishes and waits in one go.
 
@@ -113,6 +119,7 @@ switchboard ask --title "Do we start phase 2 on Thursday?" --option "Phase 2" --
 switchboard ask --forward 12   # hand a dev's question to the PO
 switchboard ack                # "read": the info and the PO's answers
 switchboard undo 12 --as manager
+switchboard withdraw 12 --as manager   # close an ask that no longer needs an answer
 ```
 
 ### The grouped signal

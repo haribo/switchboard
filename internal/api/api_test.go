@@ -559,3 +559,93 @@ func TestTheRoleTravelsWithTheAsk(t *testing.T) {
 type stubPage struct{}
 
 func (stubPage) Open(name string) (fs.File, error) { return nil, fs.ErrNotExist }
+
+// An ask that answers itself should disappear on its own, not cost the PO a
+// decision. Issue #1.
+func TestAnOpenAskCanBeWithdrawnByItsAuthor(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev1", "kind": "question", "audience": "po", "title": "Tab or modal?",
+	}, http.StatusCreated)
+	id := int64(created["id"].(float64))
+	path := "/v1/events/" + itoa(id)
+
+	if got := len(list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["for_you"])); got != 1 {
+		t.Fatalf("for_you = %d, want the ask", got)
+	}
+
+	out := h.mustDo("POST", path+"/withdraw", map[string]string{"author": "acme-dev1"}, http.StatusOK)
+	if out["state"] != "withdrawn" {
+		t.Fatalf("state = %v, want withdrawn", out["state"])
+	}
+	if out["closed_by"] != "acme-dev1" {
+		t.Fatalf("closed_by = %v, want who withdrew it", out["closed_by"])
+	}
+
+	// Off the page, and out of the tab count the page derives from it.
+	po := h.mustDo("GET", "/v1/po", nil, http.StatusOK)
+	if got := len(list(po["for_you"])); got != 0 {
+		t.Fatalf("for_you = %d, want the withdrawn ask gone", got)
+	}
+}
+
+// A session blocked on its own question must tell a withdrawal from a verdict.
+func TestAwaitReturnsAWithdrawalAsSuch(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev3", "kind": "question", "title": "Which date format?",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+
+	done := make(chan map[string]any, 1)
+	go func() { done <- h.mustDo("GET", path+"/reply?wait=10", nil, http.StatusOK) }()
+	time.Sleep(150 * time.Millisecond)
+	h.mustDo("POST", path+"/withdraw", map[string]string{"author": "acme-dev3"}, http.StatusOK)
+
+	select {
+	case e := <-done:
+		if e["state"] != "withdrawn" {
+			t.Fatalf("state = %v, want withdrawn", e["state"])
+		}
+		if _, hasReply := e["reply"]; hasReply {
+			t.Fatal("a withdrawal came back carrying a reply")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("await did not return on a withdrawal — it would have waited out its timeout")
+	}
+}
+
+func TestWithdrawalIsRefusedWhereItShouldBe(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev1", "kind": "question", "audience": "po", "title": "Which label?",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+
+	// Not the author, not the manager.
+	h.mustDo("POST", path+"/withdraw", map[string]string{"author": "acme-dev2"}, http.StatusForbidden)
+	// Nobody named at all.
+	h.mustDo("POST", path+"/withdraw", map[string]string{}, http.StatusBadRequest)
+	h.mustDo("POST", "/v1/events/999/withdraw", map[string]string{"author": "acme-dev1"}, http.StatusNotFound)
+
+	// Answered: that is undo's job, and the two must not overlap.
+	h.mustDo("POST", path+"/replies", map[string]string{"author": "po", "text": "Save"}, http.StatusCreated)
+	h.mustDo("POST", path+"/withdraw", map[string]string{"author": "acme-dev1"}, http.StatusConflict)
+	if got := h.mustDo("GET", path, nil, http.StatusOK); got["state"] != "answered" {
+		t.Fatalf("state = %v, want the answer untouched", got["state"])
+	}
+}
+
+// The manager dispatches, so they can withdraw anybody's ask.
+func TestTheManagerCanWithdrawAnybodysAsk(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev4", "kind": "blocked", "title": "Migration failing",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+
+	h.mustDo("POST", path+"/withdraw", map[string]string{"author": "manager"}, http.StatusOK)
+	if got := h.mustDo("GET", "/v1/state", nil, http.StatusOK); got["pending"].(float64) != 0 {
+		t.Fatalf("pending = %v, want the withdrawn ask to stop counting", got["pending"])
+	}
+}

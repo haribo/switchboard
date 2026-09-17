@@ -98,7 +98,7 @@ func TestTheSpecificationEnumsMatchWhatIsAccepted(t *testing.T) {
 		"Kind":          {"info", "question", "validation", "blocked"},
 		"Audience":      {"manager", "po"},
 		"Role":          {"dev", "manager", "po"},
-		"EventState":    {"open", "answered", "done"},
+		"EventState":    {"open", "answered", "done", "withdrawn"},
 		"SessionStatus": {"active", "waiting", "idle"},
 		"TableState":    {RowBlocked, RowOnYou, RowWorking, RowIdle},
 	} {

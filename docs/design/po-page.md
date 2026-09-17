@@ -62,8 +62,17 @@ A `validation` also carries its link, opened in another tab.
   long as they leave it there.
 - The order is the server's, oldest first, and the DOM is only reordered when
   **nobody is typing** — moving a focused field would drop the caret.
-- If somebody answers an ask elsewhere while the PO is typing into it, the card
-  is not pulled out from under them: it says so, and they close it.
+- If an ask leaves the list while the PO is typing into it — answered by somebody
+  else, or **withdrawn** by its author — the card is not pulled out from under
+  them. It is disabled in place, says *This is no longer waiting on you*, keeps
+  what was typed, and waits for the PO to close it.
+
+  The wording is deliberately silent on *why*. The page only knows the ask is no
+  longer in `for_you`; it does not know whether it was answered or withdrawn.
+  Naming a cause it cannot establish would be the page asserting something it has
+  not observed — the same failure as a link that leads nowhere. Fetching the
+  reason would mean a second call for a case that costs the PO one click, so the
+  page states what is certain and stops there.
 - `info` never reaches this list. It sits in a folded section at the bottom,
   closed, with a count.
 - If the service stops answering, the page says **service unreachable**. An empty

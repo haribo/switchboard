@@ -230,7 +230,7 @@ func (s *Store) AnsweredFor(author string) ([]Event, error) {
 func (s *Store) queryEvents(where string, args ...any) ([]Event, error) {
 	const base = `
 		SELECT e.id, e.author, e.role, e.kind, e.title, e.body, e.link, e.issue, e.audience,
-		       e.options, e.state, e.created_at, e.closed_at,
+		       e.options, e.state, e.created_at, e.closed_at, e.closed_by,
 		       r.id, r.author, r.text, r.option, r.created_at, r.seen_at
 		FROM events e
 		LEFT JOIN replies r ON r.event_id = e.id
@@ -250,7 +250,7 @@ func (s *Store) queryEvents(where string, args ...any) ([]Event, error) {
 		var rAuthor, rText, rOption sql.NullString
 		var rCreated, rSeen sql.NullInt64
 		if err := rows.Scan(&e.ID, &e.Author, &e.Role, &e.Kind, &e.Title, &e.Body, &e.Link, &e.Issue, &e.Audience,
-			&opts, &e.State, &created, &closed,
+			&opts, &e.State, &created, &closed, &e.ClosedBy,
 			&rID, &rAuthor, &rText, &rOption, &rCreated, &rSeen); err != nil {
 			return nil, err
 		}
@@ -282,6 +282,57 @@ func (s *Store) Reroute(id int64, audience string) error {
 	}
 	s.notify()
 	return nil
+}
+
+// ErrNotOpen is returned when an event cannot be withdrawn because it is no
+// longer waiting on anybody.
+var ErrNotOpen = errors.New("event is not open")
+
+// ErrNotAllowed is returned when somebody tries to withdraw an event that is
+// not theirs to withdraw.
+var ErrNotAllowed = errors.New("not yours to withdraw")
+
+// Withdraw closes an open event without answering it — the ask turned out not
+// to need one, usually because the asker found the answer themselves.
+//
+// Only the author can withdraw their own ask; the manager can withdraw any of
+// them, because dispatching is their job. Someone is always accountable for a
+// card disappearing from under the reader, so who did it is recorded.
+//
+// An answered event is refused: taking an answer back is Undo, and the two must
+// not overlap.
+func (s *Store) Withdraw(eventID int64, by string) (Event, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback()
+
+	var author, state string
+	err = tx.QueryRow(`SELECT author, state FROM events WHERE id = ?`, eventID).Scan(&author, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, ErrNotFound
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	if state != StateOpen {
+		return Event{}, fmt.Errorf("%w: it is %s", ErrNotOpen, state)
+	}
+	if by != author && by != AudienceManager {
+		return Event{}, fmt.Errorf("%w: %s was raised by %s", ErrNotAllowed, by, author)
+	}
+
+	now := s.now()
+	if _, err := tx.Exec(`UPDATE events SET state = ?, closed_at = ?, closed_by = ? WHERE id = ?`,
+		StateWithdrawn, ms(now), by, eventID); err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, err
+	}
+	s.notify()
+	return s.Event(eventID)
 }
 
 // --- replies ----------------------------------------------------------------

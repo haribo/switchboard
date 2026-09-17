@@ -138,6 +138,7 @@ func (s *Server) table() []route {
 		{http.MethodPost, "/v1/events/{id}/seen", s.markSeen},
 		{http.MethodPost, "/v1/events/{id}/replies", s.addReply},
 		{http.MethodPost, "/v1/events/{id}/undo", s.undo},
+		{http.MethodPost, "/v1/events/{id}/withdraw", s.withdraw},
 		{http.MethodPost, "/v1/events/{id}/reroute", s.reroute},
 
 		{http.MethodPut, "/v1/sessions/{name}", s.putSession},
@@ -253,7 +254,10 @@ func (s *Server) awaitReply(w http.ResponseWriter, r *http.Request) {
 			failStore(w, err)
 			return
 		}
-		if e.Reply != nil {
+		// An answer is one way to stop waiting; a withdrawal is another. A
+		// caller blocked on its own question has to tell them apart, or it
+		// resumes as if it had a verdict.
+		if e.Reply != nil || e.State != store.StateOpen {
 			write(w, http.StatusOK, e)
 			return
 		}
@@ -409,6 +413,49 @@ type UndoResponse struct {
 	WasRead bool `json:"was_read"`
 	// CatchUpID is the event raised to the manager so they can reach that dev.
 	CatchUpID int64 `json:"catch_up_id,omitempty"`
+}
+
+type withdrawRequest struct {
+	Author string `json:"author"`
+}
+
+// withdraw closes an open ask that turned out not to need an answer — the dev
+// found it themselves, or the manager read the issue and saw the decision was
+// already written.
+//
+// It is refused on an answered event: taking an answer back is undo, and the
+// two must not overlap.
+func (s *Server) withdraw(w http.ResponseWriter, r *http.Request) {
+	id, ok := eventID(w, r)
+	if !ok {
+		return
+	}
+	var req withdrawRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Author = strings.TrimSpace(req.Author)
+	if req.Author == "" {
+		fail(w, http.StatusBadRequest, "author is required: someone is accountable for the card disappearing")
+		return
+	}
+
+	e, err := s.st.Withdraw(id, req.Author)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such event")
+		return
+	case errors.Is(err, store.ErrNotOpen):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, store.ErrNotAllowed):
+		fail(w, http.StatusForbidden, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, s.withIssueURLs([]store.Event{e})[0])
 }
 
 type rerouteRequest struct {

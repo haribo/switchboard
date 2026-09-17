@@ -35,9 +35,10 @@ const (
 
 // Event lifecycle.
 const (
-	StateOpen     = "open"
-	StateAnswered = "answered"
-	StateDone     = "done"
+	StateOpen      = "open"
+	StateAnswered  = "answered"
+	StateDone      = "done"
+	StateWithdrawn = "withdrawn"
 )
 
 // Session is the living state of one Claude session. GitHub owns the work; this
@@ -76,7 +77,10 @@ type Event struct {
 	State      string     `json:"state"`
 	CreatedAt  time.Time  `json:"created_at"`
 	ClosedAt   *time.Time `json:"closed_at,omitempty"`
-	Reply      *Reply     `json:"reply,omitempty"`
+	// ClosedBy is who withdrew the event, when it was withdrawn rather than
+	// answered. Empty otherwise.
+	ClosedBy string `json:"closed_by,omitempty"`
+	Reply    *Reply `json:"reply,omitempty"`
 }
 
 // Reply is an answer to an event, kept for good.
