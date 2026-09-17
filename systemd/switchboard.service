@@ -1,0 +1,18 @@
+[Unit]
+Description=switchboard — coordination for parallel Claude sessions
+Documentation=https://github.com/haribo/switchboard
+After=default.target
+
+[Service]
+Type=simple
+# Settings live in one file, so the unit never has to be hand-edited.
+# The leading dash means a missing file is not an error.
+EnvironmentFile=-%h/.config/switchboard/switchboard.env
+ExecStart=%h/.local/bin/switchboard serve
+Restart=on-failure
+RestartSec=2
+# The database lives under ~/.local/share and outlives every upgrade.
+Environment=XDG_DATA_HOME=%h/.local/share
+
+[Install]
+WantedBy=default.target

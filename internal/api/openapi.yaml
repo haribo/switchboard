@@ -1,0 +1,744 @@
+openapi: 3.1.0
+
+info:
+  title: switchboard
+  version: "1"
+  summary: Coordination for parallel Claude sessions.
+  description: |
+    Five sessions build in parallel, a sixth hands out the work, and a PO
+    decides. switchboard carries the three things GitHub cannot say: the living
+    state of a session, an ask addressed to a human and followed through to its
+    answer, and a place where the PO answers without a stream of text running
+    over them.
+
+    Issues, labels and pull requests stay on GitHub. Nothing here duplicates them.
+
+    **No authentication.** The service listens on the loopback interface, on the
+    machine, for the sessions on it.
+
+    **Two calls block.** `GET /v1/events/{id}/reply` and `GET /v1/wake` take a
+    `wait` in seconds, capped at ten minutes, and answer `204` when the wait runs
+    out with nothing to say. The caller loops. Nothing polls the database: every
+    write wakes the waits in flight.
+  license:
+    name: MIT
+
+externalDocs:
+  description: Source, design notes and decision records.
+  url: https://github.com/haribo/switchboard
+
+servers:
+  - url: http://127.0.0.1:8787
+    description: The installed service.
+  - url: http://127.0.0.1:8799
+    description: A development service (`just dev`).
+
+tags:
+  - name: sessions
+    description: What each session is doing right now.
+  - name: events
+    description: Typed messages published without interrupting anybody.
+  - name: answers
+    description: Answering, and taking an answer back.
+  - name: manager
+    description: The one call that replaces being interrupted, and the grouped signal.
+  - name: po
+    description: What the PO's page reads.
+  - name: service
+    description: What is running.
+
+paths:
+  /v1/sessions/{name}:
+    put:
+      tags: [sessions]
+      operationId: saveSession
+      summary: Declare what a session is doing
+      description: |
+        Creates the session on first call. `since_at` only moves when the status
+        or the issue changes, so a repeated heartbeat does not reset it: the PO's
+        table must be able to say "40 min", not "just now" five times a minute.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The session's name, e.g. `acme-dev3`. Given by the caller, never guessed.
+          schema: { type: string, examples: ["acme-dev3"] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionRequest" }
+      responses:
+        "200":
+          description: The session as it now stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /v1/events:
+    post:
+      tags: [events]
+      operationId: addEvent
+      summary: Publish a typed event
+      description: |
+        The one call a dev session makes to say something without interrupting
+        anybody.
+
+        `audience` is worked out when it is left out: a `validation` goes to the
+        PO, everything else to the manager, who dispatches.
+
+        `body` is sanitized on the way in against a short whitelist — links,
+        bold, italic, code, lists, paragraphs. Anything else is kept as text
+        rather than run. What is stored is already clean.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventRequest" }
+      responses:
+        "201":
+          description: The event, with its id and its sanitized body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400":
+          description: |
+            Missing `author`, `kind` or `title`; an unknown `kind`, `role` or
+            `audience`; a title over one line or 120 characters; or a
+            `validation` with no `link` — which is a validation nobody can give.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/events/{id}:
+    get:
+      tags: [events]
+      operationId: getEvent
+      summary: One event and its answer
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      responses:
+        "200":
+          description: The event.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/events/{id}/reply:
+    get:
+      tags: [events]
+      operationId: awaitReply
+      summary: Wait for the answer to an event
+      description: |
+        Blocks until the event has an answer, so a dev can go back to work on its
+        own. Answers `204` when the wait runs out; the caller loops.
+
+        After reading an answer, call `POST /v1/events/{id}/seen`. That is what
+        tells an undo it is too late to be invisible.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+        - $ref: "#/components/parameters/Wait"
+      responses:
+        "200":
+          description: The event, answer included.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "204":
+          description: The wait ran out with no answer yet. Ask again.
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/events/{id}/seen:
+    post:
+      tags: [events]
+      operationId: markSeen
+      summary: Say the asker has read the answer
+      description: |
+        An answer that has been read cannot be taken back silently: somebody is
+        already working on it. This is what makes that knowable.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      responses:
+        "204":
+          description: Recorded.
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/events/{id}/replies:
+    post:
+      tags: [answers]
+      operationId: addReply
+      summary: Answer an event
+      description: |
+        An event takes **one** answer. Answering twice is a mistake, not an edit.
+        To correct one, take it back with `undo` inside the window.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReplyRequest" }
+      responses:
+        "201":
+          description: The answer as recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reply" }
+        "400":
+          description: No `author`, or neither `text` nor `option`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The event already has an answer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/events/{id}/undo:
+    post:
+      tags: [answers]
+      operationId: undoReply
+      summary: Take back an answer just given
+      description: |
+        Ten seconds by default (`--undo-window`). Short on purpose: it catches
+        the wrong button, not a change of mind. Only the author of an answer can
+        take it back.
+
+        The event becomes actionable **as of now**, not as of its creation — the
+        batching must treat it as something new, or nobody would be told it is
+        waiting again.
+
+        If the asker had already read the answer, the withdrawal cannot be
+        silent. It then raises an ask to the manager naming the dev to reach, and
+        `catch_up_id` points at it. The service never talks to a session itself.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                author:
+                  type: string
+                  description: Who wrote the answer. Defaults to `po`.
+                  default: po
+      responses:
+        "200":
+          description: The event, open again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UndoResponse" }
+        "404":
+          description: No such event, or it has no answer to take back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Past the window, or the answer was written by somebody else.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/events/{id}/reroute:
+    post:
+      tags: [manager]
+      operationId: rerouteEvent
+      summary: Change who an open event is addressed to
+      description: The manager handing a dev's question over to the PO.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [audience]
+              properties:
+                audience: { $ref: "#/components/schemas/Audience" }
+      responses:
+        "200":
+          description: The event, now addressed elsewhere.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: No such event, or it is no longer open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/state:
+    get:
+      tags: [manager]
+      operationId: getState
+      summary: Everything, in one call
+      description: |
+        What replaces being interrupted by each message: the sessions, what is
+        open, what the PO answered, and how much is waiting.
+      responses:
+        "200":
+          description: The whole picture.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StateResponse" }
+
+  /v1/wake:
+    get:
+      tags: [manager]
+      operationId: wake
+      summary: The grouped signal
+      description: |
+        The point of the whole tool. An idle session only picks work back up when
+        something prompts it, and one signal per event would rebuild the defect
+        this service exists to remove. So this call blocks until a batch is ripe
+        and then answers **a count, never the content**.
+
+        A signal is owed when, all at once: at least one item has not been
+        announced yet; the oldest of those is past the batching delay (3 min, or
+        30 s when a dev is blocked); and the last signal is further back than the
+        floor (5 min).
+
+        What counts as waiting: open events addressed to that party that are not
+        `info`, plus unread answers to questions they asked themselves. `info`
+        never counts — it exists to be published without anybody having to read
+        it now.
+      parameters:
+        - name: audience
+          in: query
+          required: false
+          description: Whose batch. Defaults to `manager`.
+          schema: { $ref: "#/components/schemas/Audience" }
+        - $ref: "#/components/parameters/Wait"
+      responses:
+        "200":
+          description: A batch is ripe.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WakeResponse" }
+        "204":
+          description: Nothing is ripe. Ask again.
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /v1/ack:
+    post:
+      tags: [manager]
+      operationId: acknowledge
+      summary: Mark as read what only had to be read
+      description: |
+        Marks the manager's unread answers as seen and closes the open `info`.
+        It never closes a question that is still waiting on somebody.
+      responses:
+        "200":
+          description: How many items were marked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acknowledged: { type: integer, format: int64 }
+
+  /v1/po:
+    get:
+      tags: [po]
+      operationId: getPOView
+      summary: What the PO's page reads
+      description: |
+        `for_you` **never** contains an `info`, even one addressed to the PO on
+        purpose: it moves to `infos`. Text scrolling while the PO reads is the
+        defect this tool exists to remove.
+
+        `recent` lists what the PO just answered and can still take back, with
+        the window in seconds, so reloading the page does not cost that chance.
+      responses:
+        "200":
+          description: The page's whole state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/POResponse" }
+
+  /v1/health:
+    get:
+      tags: [service]
+      operationId: health
+      summary: What is running, and whether it is sound
+      description: What `just deploy` checks before calling an upgrade done.
+      responses:
+        "200":
+          description: Running, schema up to date.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Running, but the schema is not the one this binary expects.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /v1/openapi.yaml:
+    get:
+      tags: [service]
+      operationId: openapiYAML
+      summary: This document
+      description: |
+        Served by the service itself, so it can only ever describe the version
+        that is answering.
+      responses:
+        "200":
+          description: The specification.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /v1/openapi.json:
+    get:
+      tags: [service]
+      operationId: openapiJSON
+      summary: This document, as JSON
+      responses:
+        "200":
+          description: The specification.
+          content:
+            application/json:
+              schema: { type: object }
+
+components:
+  parameters:
+    EventId:
+      name: id
+      in: path
+      required: true
+      description: The event's id.
+      schema: { type: integer, format: int64, examples: [12] }
+    Wait:
+      name: wait
+      in: query
+      required: false
+      description: |
+        How long to block, in seconds. Capped at 600. Zero or absent returns
+        straight away.
+      schema: { type: integer, minimum: 0, maximum: 600, default: 0 }
+
+  responses:
+    BadRequest:
+      description: The request does not hold together; the message says how.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such event.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: What went wrong, in terms the caller can act on.
+      required: [error]
+
+    Kind:
+      type: string
+      description: |
+        What sort of message this is, and therefore who has to act.
+          * `info` — progress; nobody acts, and it never wakes anyone.
+          * `question` — a call the dev cannot make alone.
+          * `validation` — the PO looks at a link and gives a verdict. Requires `link`.
+          * `blocked` — the dev is stopped; shortens the batching delay.
+      enum: [info, question, validation, blocked]
+
+    Audience:
+      type: string
+      description: Who an event is addressed to.
+      enum: [manager, po]
+
+    Role:
+      type: string
+      description: |
+        Who is asking. An ask from the manager is not decided like an ask from a
+        dev — one is a choice of direction, the other a detail to unblock — and
+        the names look too alike to tell apart at a glance, so the role travels
+        with the ask rather than being inferred from it.
+      enum: [dev, manager, po]
+
+    EventState:
+      type: string
+      description: |
+        `open` until it is answered or read. `answered` once an answer exists;
+        an undo puts it back to `open`. `done` for what only had to be read.
+      enum: [open, answered, done]
+
+    SessionStatus:
+      type: string
+      description: What a session declares about itself.
+      enum: [active, waiting, idle]
+
+    TableState:
+      type: string
+      description: |
+        What the PO's table shows. Two of the four are worked out by the service
+        rather than declared: a session with an open `blocked` is `blocked`, and
+        one with an open ask sitting with the PO is `waiting_on_you`. A status
+        nobody has to refresh cannot go stale.
+      enum: [blocked, waiting_on_you, working, idle]
+
+    Issue:
+      type: string
+      description: |
+        The issue this is about: a bare number, or its full address. A session
+        knows the repository it works in; the service does not, and does not
+        guess. So a full address always links, and a bare number only links when
+        the service was started with `--repo`.
+      examples: ["142", "https://github.com/acme/app/issues/142"]
+
+    SessionRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: "#/components/schemas/SessionStatus" }
+        issue: { $ref: "#/components/schemas/Issue" }
+        detail:
+          type: string
+          description: "One short line: what is happening. Shown in the PO's table, clipped to one line."
+          examples: ["action bar, label of the primary button"]
+
+    Session:
+      type: object
+      properties:
+        name: { type: string }
+        status: { $ref: "#/components/schemas/SessionStatus" }
+        issue: { $ref: "#/components/schemas/Issue" }
+        detail: { type: string }
+        since_at:
+          type: string
+          format: date-time
+          description: When the session entered this status, on this issue.
+        updated_at:
+          type: string
+          format: date-time
+          description: Last sign of life.
+      required: [name, status, since_at, updated_at]
+
+    SessionRow:
+      type: object
+      description: One line of the PO's table.
+      properties:
+        name: { type: string }
+        state: { $ref: "#/components/schemas/TableState" }
+        issue: { $ref: "#/components/schemas/Issue" }
+        issue_label:
+          type: string
+          description: What to show, whatever form the session sent.
+          examples: ["#142"]
+        issue_url:
+          type: string
+          format: uri
+          description: Absent when it could not be resolved; the page then shows the label as plain text.
+        detail: { type: string }
+        since_at: { type: string, format: date-time }
+      required: [name, state, since_at]
+
+    EventRequest:
+      type: object
+      required: [author, kind, title]
+      properties:
+        author:
+          type: string
+          description: The session publishing this.
+          examples: ["acme-dev3"]
+        role: { $ref: "#/components/schemas/Role" }
+        kind: { $ref: "#/components/schemas/Kind" }
+        title:
+          type: string
+          maxLength: 120
+          description: |
+            One line, what this is about. It is what the PO skims to decide
+            whether to take this one now, so a newline or anything past 120
+            characters is refused — that belongs in the body.
+          examples: ["Label of the primary button in the action bar"]
+        body:
+          type: string
+          description: |
+            The detail, read once the PO has decided to take this one. HTML from
+            a short whitelist — `p`, `br`, `strong`, `b`, `em`, `i`, `code`,
+            `ul`, `ol`, `li`, and `a` with an `http`, `https` or `mailto` href.
+            Anything else survives as text rather than being run. Sanitized on
+            the way in; what comes back is what will be rendered.
+          examples: ['<p>It has said <code>Save</code> from the start. The <a href="https://github.com/acme/app/issues/142">mockup</a> says "Confirm".</p>']
+        link:
+          type: string
+          format: uri
+          description: The address to open. Required for a `validation`.
+        issue: { $ref: "#/components/schemas/Issue" }
+        audience: { $ref: "#/components/schemas/Audience" }
+        options:
+          type: array
+          description: Answers offered as buttons. A free text field is always there as well.
+          items: { type: string }
+          examples: [["Save", "Confirm"]]
+
+    Event:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        author: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        kind: { $ref: "#/components/schemas/Kind" }
+        title: { type: string }
+        body:
+          type: string
+          description: Sanitized HTML, safe to render. Never what a session sent verbatim.
+        link: { type: string, format: uri }
+        issue: { $ref: "#/components/schemas/Issue" }
+        issue_label: { type: string }
+        issue_url: { type: string, format: uri }
+        audience: { $ref: "#/components/schemas/Audience" }
+        options:
+          type: array
+          items: { type: string }
+        state: { $ref: "#/components/schemas/EventState" }
+        created_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+        reply: { $ref: "#/components/schemas/Reply" }
+      required: [id, author, role, kind, title, audience, state, created_at]
+
+    ReplyRequest:
+      type: object
+      required: [author]
+      properties:
+        author:
+          type: string
+          description: Who is answering, e.g. `po` or `manager`.
+        text:
+          type: string
+          description: A free-text answer. One of `text` or `option` is required.
+        option:
+          type: string
+          description: The offered option taken.
+      anyOf:
+        - required: [text]
+        - required: [option]
+
+    Reply:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        event_id: { type: integer, format: int64 }
+        author: { type: string }
+        text: { type: string }
+        option: { type: string }
+        created_at: { type: string, format: date-time }
+        seen_at:
+          type: string
+          format: date-time
+          description: When the asker read it. Absent while unread.
+      required: [id, event_id, author, created_at]
+
+    UndoResponse:
+      type: object
+      properties:
+        event: { $ref: "#/components/schemas/Event" }
+        was_read:
+          type: boolean
+          description: Whether the asker had already read the answer.
+        catch_up_id:
+          type: integer
+          format: int64
+          description: |
+            The ask raised to the manager so they can reach that dev. Present
+            only when `was_read` is true.
+      required: [event, was_read]
+
+    StateResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/Session" }
+        waiting:
+          type: array
+          description: Open, addressed to the manager, needing a call.
+          items: { $ref: "#/components/schemas/Event" }
+        infos:
+          type: array
+          description: Open, addressed to the manager, needing nothing.
+          items: { $ref: "#/components/schemas/Event" }
+        with_po:
+          type: array
+          description: Open, sitting with the PO.
+          items: { $ref: "#/components/schemas/Event" }
+        answers:
+          type: array
+          description: Answered, not read yet — the return trip.
+          items: { $ref: "#/components/schemas/Event" }
+        pending:
+          type: integer
+          description: What a wake signal would count.
+      required: [sessions, waiting, infos, with_po, answers, pending]
+
+    POResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/SessionRow" }
+        for_you:
+          type: array
+          description: Everything addressed to the PO, and nothing else. Never an `info`.
+          items: { $ref: "#/components/schemas/Event" }
+        infos:
+          type: array
+          description: The folded-away zone; never in the flow.
+          items: { $ref: "#/components/schemas/Event" }
+        recent:
+          type: array
+          description: Just answered by the PO, still within the undo window.
+          items: { $ref: "#/components/schemas/Event" }
+        undo_window:
+          type: integer
+          description: How long an answer can be taken back, in seconds.
+      required: [sessions, for_you, infos, recent, undo_window]
+
+    WakeResponse:
+      type: object
+      description: A count, never the content.
+      properties:
+        count:
+          type: integer
+          description: Everything still pending, not only what is new.
+        blocked:
+          type: integer
+          description: How many of those are stopped devs.
+        oldest:
+          type: string
+          format: date-time
+          description: When the oldest unsignalled item landed.
+        line:
+          type: string
+          description: The one line to print. One line is one notification.
+          examples: ["3 events to handle, 1 blocked"]
+      required: [count, blocked, line]
+
+    Health:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          description: True when the database schema is the one this binary expects.
+        version: { type: string, examples: ["v0.1.0-3-gab12cd-dirty"] }
+        commit: { type: string }
+        schema: { type: integer }
+        schema_target: { type: integer }
+        started_at: { type: string, format: date-time }
+        database: { type: string }
+      required: [ok, version, schema, schema_target, started_at]
