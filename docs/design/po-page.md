@@ -158,6 +158,10 @@ somebody is typing into it.
   page states what is certain and stops there.
 - `info` never reaches this list. It sits in a folded section at the bottom,
   closed, with a count.
+- **A section with nothing in it is not shown at all.** No asks, no *Your call*;
+  no info, no folded section. A heading, a zero and a sentence saying the same
+  thing three times is three times the reading for no news — and a page whose
+  sections come and go by content makes their presence mean something.
 - If the service stops answering, the page says **service unreachable**. An empty
   page and a dead one must not look alike.
 

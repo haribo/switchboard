@@ -240,16 +240,15 @@
     </div>
   </section>
 
-  <section>
+  <section id="call-section">
     <div class="sec-head">
       <h2>Your call</h2>
       <span class="count" id="count"></span>
     </div>
     <div class="asks" id="asks"></div>
-    <p class="empty" id="empty" hidden>Nothing is waiting on you.</p>
   </section>
 
-  <details class="fold" id="infos-box">
+  <details class="fold" id="infos-box" hidden>
     <summary id="infos-summary">Info</summary>
     <ul id="infos"></ul>
   </details>
@@ -663,8 +662,11 @@ function renderAsks(items) {
 }
 
 function refreshEmpty() {
-  document.getElementById("empty").hidden = cards.size !== 0 || undoable.size !== 0;
-  document.getElementById("count").textContent = cards.size + undoable.size;
+  // Nothing to decide: the whole section goes. A heading, a zero and a sentence
+  // saying the same thing three times is three times the reading for no news.
+  const n = cards.size + undoable.size;
+  document.getElementById("call-section").hidden = n === 0;
+  document.getElementById("count").textContent = n;
 }
 
 // reorder puts the DOM back in the server's order — oldest first — but only
@@ -683,6 +685,8 @@ function reorder(items) {
 }
 
 function renderInfos(infos) {
+  // Same rule: no info, no folded section to notice and ignore.
+  document.getElementById("infos-box").hidden = infos.length === 0;
   const box = document.getElementById("infos");
   document.getElementById("infos-summary").textContent =
     infos.length ? `Info (${infos.length})` : "Info";
