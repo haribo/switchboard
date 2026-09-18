@@ -50,6 +50,14 @@ One rule per line where possible.
 - A description is never stored or rendered unsanitized — `richtext.Clean` on the
   way in, see `docs/adr/0004-descriptions-take-a-whitelist.md`
 
+## Input rules
+
+- Validation belongs on the way in. A read or a delete accepts anything the store
+  can hold: applying a creation rule to them rejects exactly the data that most
+  needs reaching — a row written before the rule existed
+- Tightening an accepted shape is not finished until the routes that reach
+  existing rows have been checked against the new rule
+
 ## The PO's page
 
 - Nothing scrolls, nothing reorders under the reader, nothing animates
