@@ -68,6 +68,10 @@
     font-size: 13px; color: var(--muted); text-align: right;
     font-variant-numeric: tabular-nums; white-space: nowrap;
   }
+  /* Only when there is something to say: a fleet that is all healthy shows
+     nothing here, which is this page's whole discipline. */
+  .c-for .quiet { color: var(--wait); font-weight: 600; }
+  .c-for .quiet::before { content: "·"; margin: 0 6px; color: var(--muted); font-weight: 400; }
 
   .ico { width: 19px; height: 19px; display: block; fill: currentColor; }
   .c-state .ico { margin: 0 auto; }
@@ -374,7 +378,19 @@ function renderSessions(sessions) {
 
     note.textContent = s.detail || "";
     note.title = s.detail || "";
-    since.textContent = forHuman(s.since_at);
+
+    // Two readings, both needed: how long it has been on this, and whether
+    // anything is still arriving. A session declaring every minute and one that
+    // stopped an hour ago have the same since_at.
+    since.replaceChildren(document.createTextNode(forHuman(s.since_at)));
+    if (s.quiet) {
+      const q = el("span", "quiet", "quiet " + forHuman(s.updated_at));
+      // Says what was observed — silence — not what might be behind it.
+      q.title = "Nothing has arrived from this session since " +
+        new Date(s.updated_at).toLocaleTimeString() +
+        ". It may be on one long task, or gone — the service cannot tell.";
+      since.append(q);
+    }
   }
 
   for (const [name, row] of rows) {

@@ -936,3 +936,71 @@ func TestAnExplanationIsSanitized(t *testing.T) {
 		t.Fatalf("the link was dropped: %q", body)
 	}
 }
+
+// The table answered "how long in this status" and nothing else, so a session
+// declaring every minute and one that died an hour ago rendered identically.
+// Issue #17.
+func TestARowCarriesBothHowLongAndWhetherAnythingIsArriving(t *testing.T) {
+	h := newHarness(t)
+
+	// Two sessions enter their status at the same instant.
+	h.mustDo("PUT", "/v1/sessions/acme-dev1", map[string]string{"status": "active"}, http.StatusOK)
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{"status": "active"}, http.StatusOK)
+
+	// An hour passes. One keeps declaring the same thing; the other says nothing.
+	*h.now = base.Add(time.Hour)
+	h.mustDo("PUT", "/v1/sessions/acme-dev1", map[string]string{"status": "active"}, http.StatusOK)
+
+	rows := map[string]map[string]any{}
+	for _, raw := range list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"]) {
+		row := raw.(map[string]any)
+		rows[row["name"].(string)] = row
+	}
+
+	// since_at keeps its documented behaviour for both: a repeated declaration
+	// does not reset the duration in status.
+	if rows["acme-dev1"]["since_at"] != rows["acme-dev2"]["since_at"] {
+		t.Fatalf("since_at differs: %v vs %v — a heartbeat reset it",
+			rows["acme-dev1"]["since_at"], rows["acme-dev2"]["since_at"])
+	}
+	// But the rows are now distinguishable, which is the whole point.
+	if rows["acme-dev1"]["quiet"] == true {
+		t.Fatal("a session that just declared is marked quiet")
+	}
+	if rows["acme-dev2"]["quiet"] != true {
+		t.Fatal("a session silent for an hour is not marked")
+	}
+	if rows["acme-dev1"]["updated_at"] == rows["acme-dev2"]["updated_at"] {
+		t.Fatal("updated_at does not separate them either")
+	}
+}
+
+// The board reads the same rows as the page, so the two cannot disagree.
+func TestTheBoardCarriesTheSameFreshness(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{"status": "active"}, http.StatusOK)
+	*h.now = base.Add(time.Hour)
+
+	row := first(h.mustDo("GET", "/v1/state", nil, http.StatusOK)["sessions"])
+	if row["quiet"] != true {
+		t.Fatalf("the board's row does not carry it: %v", row)
+	}
+	if row["state"] != "working" {
+		t.Fatalf("state = %v — the board reads a derived row, like the page", row["state"])
+	}
+}
+
+func TestTheQuietThresholdIsTheServices(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{"status": "active"}, http.StatusOK)
+
+	// Just under the threshold: nothing is said.
+	*h.now = base.Add(DefaultConfig.QuietAfter - time.Minute)
+	if first(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])["quiet"] == true {
+		t.Fatal("marked before the threshold")
+	}
+	*h.now = base.Add(DefaultConfig.QuietAfter + time.Minute)
+	if first(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])["quiet"] != true {
+		t.Fatal("not marked past the threshold")
+	}
+}

@@ -218,6 +218,8 @@ func serve(args []string) error {
 		"batching delay when a dev is blocked")
 	fs.DurationVar(&cfg.UndoWindow, "undo-window", envDuration("UNDO_WINDOW", cfg.UndoWindow),
 		"how long an answer can be taken back")
+	fs.DurationVar(&cfg.QuietAfter, "quiet-after", envDuration("QUIET_AFTER", cfg.QuietAfter),
+		"how long a session may say nothing before the table marks it")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
@@ -234,8 +236,8 @@ func serve(args []string) error {
 	// overwritten by an upgrade, so a dropped setting survives in it silently.
 	reportStraySettings(os.Environ(), os.Stdout)
 	fmt.Printf("listening on http://%s — database %s (schema %d)\n", *addr, *db, store.SchemaTarget())
-	fmt.Printf("batching %s, floor %s, blocked %s, undo %s\n",
-		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow)
+	fmt.Printf("batching %s, floor %s, blocked %s, undo %s, quiet after %s\n",
+		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow, cfg.QuietAfter)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -409,24 +411,31 @@ func board(args []string) error {
 	return nil
 }
 
+// quietNote is what a row says when nothing has arrived from it for a while.
+//
+// It names what was observed — silence — and not what might be behind it. The
+// session may be on one long task or gone; the service cannot tell, and must not
+// display a distinction it has no means of observing.
+func quietNote(quiet bool, updated time.Time) string {
+	if !quiet {
+		return ""
+	}
+	return "  quiet " + age(updated)
+}
+
 func printBoard(w io.Writer, st api.StateResponse) {
 	fmt.Fprintln(w, "SESSIONS")
 	if len(st.Sessions) == 0 {
 		fmt.Fprintln(w, "  (none)")
 	}
-	waiting := map[string]bool{}
-	for _, e := range st.WithPO {
-		waiting[e.Author] = true
-	}
-	sorted := append([]store.Session(nil), st.Sessions...)
+	sorted := append([]api.SessionRow(nil), st.Sessions...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, s := range sorted {
-		flag := ""
-		if waiting[s.Name] {
-			flag = "  (with the PO)"
-		}
-		fmt.Fprintf(w, "  %-14s %-8s %-8s %s%s\n",
-			s.Name, s.Status, orDash(issueTag(s.Issue)), age(s.SinceAt), flag)
+		// The state is the derived one the page shows, so the board and the
+		// page cannot disagree — it already says when a session waits on the PO.
+		line := fmt.Sprintf("  %-14s %-14s %-8s %s",
+			s.Name, s.State, orDash(s.IssueLabel), age(s.SinceAt))
+		fmt.Fprintln(w, strings.TrimRight(line+quietNote(s.Quiet, s.UpdatedAt), " "))
 	}
 
 	section(w, "NEEDS YOU", st.Waiting, func(e store.Event) {

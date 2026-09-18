@@ -17,6 +17,7 @@ var knownSettings = map[string]bool{
 	"SWITCHBOARD_MIN_INTERVAL": true,
 	"SWITCHBOARD_URGENT":       true,
 	"SWITCHBOARD_UNDO_WINDOW":  true,
+	"SWITCHBOARD_QUIET_AFTER":  true,
 	// Read by the client, not the server, but it legitimately sits in the same
 	// environment — naming it as unknown would send the operator after nothing.
 	"SWITCHBOARD_URL": true,

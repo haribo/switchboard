@@ -32,6 +32,11 @@ type Config struct {
 	// UndoWindow is how long the person who answered can take it back. Short on
 	// purpose: it catches the wrong button, not a change of mind.
 	UndoWindow time.Duration
+	// QuietAfter is how long a session may say nothing before the table marks
+	// it. It marks silence, not death: the service observes that nothing has
+	// arrived, and cannot know why. A session may be working on one long task,
+	// or gone.
+	QuietAfter time.Duration
 }
 
 // IssueURL is the address of an issue, or "" when there is none to give.
@@ -69,17 +74,32 @@ const (
 
 // SessionRow is one line of the sessions table.
 type SessionRow struct {
-	Name       string    `json:"name"`
-	State      string    `json:"state"`
-	Issue      string    `json:"issue,omitempty"`
-	IssueLabel string    `json:"issue_label,omitempty"`
-	IssueURL   string    `json:"issue_url,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	SinceAt    time.Time `json:"since_at"`
+	Name       string `json:"name"`
+	State      string `json:"state"`
+	Issue      string `json:"issue,omitempty"`
+	IssueLabel string `json:"issue_label,omitempty"`
+	IssueURL   string `json:"issue_url,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	// SinceAt answers "how long has it been on this", and does not move on a
+	// repeated declaration — see the store.
+	SinceAt time.Time `json:"since_at"`
+	// UpdatedAt answers the other question the table has to carry: "is anything
+	// still arriving from it". A session declaring every minute and one that
+	// stopped an hour ago have the same SinceAt.
+	UpdatedAt time.Time `json:"updated_at"`
+	// Quiet is set once nothing has arrived for longer than the service's
+	// threshold. It says the row has gone silent, never that the session is
+	// dead: the service cannot observe that, and must not display a distinction
+	// it has no means of observing.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // DefaultConfig is the shipped behaviour.
-var DefaultConfig = Config{Wake: wake.Default, UndoWindow: 10 * time.Second}
+var DefaultConfig = Config{
+	Wake:       wake.Default,
+	UndoWindow: 10 * time.Second,
+	QuietAfter: 30 * time.Minute,
+}
 
 // Server routes the HTTP surface.
 type Server struct {
@@ -631,12 +651,14 @@ func (s *Server) reroute(w http.ResponseWriter, r *http.Request) {
 
 // StateResponse is everything the manager needs, in one call.
 type StateResponse struct {
-	Sessions []store.Session `json:"sessions"`
-	Waiting  []store.Event   `json:"waiting"` // open, addressed to the manager, needs a decision
-	Infos    []store.Event   `json:"infos"`   // open, addressed to the manager, needs nothing
-	WithPO   []store.Event   `json:"with_po"` // open, sitting with the PO
-	Answers  []store.Event   `json:"answers"` // answered, not read yet — the return trip
-	Pending  int             `json:"pending"` // what a wake signal would count
+	// The same rows the PO's page reads, so the board and the page cannot
+	// disagree about what a session is doing.
+	Sessions []SessionRow  `json:"sessions"`
+	Waiting  []store.Event `json:"waiting"` // open, addressed to the manager, needs a decision
+	Infos    []store.Event `json:"infos"`   // open, addressed to the manager, needs nothing
+	WithPO   []store.Event `json:"with_po"` // open, sitting with the PO
+	Answers  []store.Event `json:"answers"` // answered, not read yet — the return trip
+	Pending  int           `json:"pending"` // what a wake signal would count
 }
 
 // state is the one call that replaces being interrupted: everything, at once.
@@ -668,7 +690,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := StateResponse{
-		Sessions: sessions, Waiting: []store.Event{}, Infos: []store.Event{},
+		Sessions: s.rows(sessions, mine, withPO), Waiting: []store.Event{}, Infos: []store.Event{},
 		WithPO:  s.withIssueURLs(withPO),
 		Answers: s.withIssueURLs(answers),
 		Pending: len(items),
@@ -876,6 +898,8 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 		row := SessionRow{
 			Name: sess.Name, Issue: sess.Issue, Detail: sess.Detail,
 			SinceAt:    sess.SinceAt,
+			UpdatedAt:  sess.UpdatedAt,
+			Quiet:      s.cfg.QuietAfter > 0 && s.st.Now().Sub(sess.UpdatedAt) > s.cfg.QuietAfter,
 			IssueLabel: s.cfg.IssueLabel(sess.Issue),
 			IssueURL:   s.cfg.IssueURL(sess.Issue),
 		}

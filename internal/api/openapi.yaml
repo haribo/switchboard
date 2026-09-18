@@ -754,8 +754,31 @@ components:
           format: uri
           description: Absent when it could not be resolved; the page then shows the label as plain text.
         detail: { type: string }
-        since_at: { type: string, format: date-time }
-      required: [name, state, since_at]
+        since_at:
+          type: string
+          format: date-time
+          description: |
+            When the session entered this status, on this issue. It does **not**
+            move on a repeated declaration, so the table can say "40 min" rather
+            than "just now" five times a minute.
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            When anything last arrived from the session. The other question the
+            table has to answer: a session declaring every minute and one that
+            stopped an hour ago have the same `since_at`.
+        quiet:
+          type: boolean
+          description: |
+            Nothing has arrived from this session for longer than the service's
+            threshold (`--quiet-after`, 30 minutes by default).
+
+            It says the row has gone **silent**, never that the session is dead.
+            The service observes that nothing arrived; it cannot know whether the
+            session is on one long task or gone, and does not display a
+            distinction it has no means of observing.
+      required: [name, state, since_at, updated_at]
 
     EventRequest:
       type: object
@@ -886,7 +909,8 @@ components:
       properties:
         sessions:
           type: array
-          items: { $ref: "#/components/schemas/Session" }
+          description: The same rows the PO's page reads.
+          items: { $ref: "#/components/schemas/SessionRow" }
         waiting:
           type: array
           description: Open, addressed to the manager, needing a call.
