@@ -10,13 +10,13 @@ import (
 	"html"
 	"io/fs"
 	"net/http"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"switchboard/internal/build"
+	"switchboard/internal/issueref"
 	"switchboard/internal/richtext"
 	"switchboard/internal/store"
 	"switchboard/internal/wake"
@@ -43,27 +43,11 @@ type Config struct {
 //
 // New events are refused a bare number on the way in. Rows written before that
 // rule keep theirs, and render as plain text.
-func (c Config) IssueURL(issue string) string {
-	if isURL(issue) {
-		return issue
-	}
-	return ""
-}
+func (c Config) IssueURL(issue string) string { return issueref.URL(issue) }
 
-// IssueLabel is what the page shows: "#142", whether the session sent the number
-// or the whole address.
-func (c Config) IssueLabel(issue string) string {
-	if issue == "" {
-		return ""
-	}
-	if isURL(issue) {
-		if n := path.Base(strings.TrimRight(issue, "/")); n != "" && n != "." && n != "/" {
-			return "#" + n
-		}
-		return issue
-	}
-	return "#" + strings.TrimPrefix(issue, "#")
-}
+// IssueLabel is what the page and the board show: `#1886`, whatever form the
+// value takes. See package issueref.
+func (c Config) IssueLabel(issue string) string { return issueref.Label(issue) }
 
 // issueRule is what an issue has to be, said the way every other rule is.
 const issueRule = "an issue takes its full URL — a bare number has no repository"
@@ -71,11 +55,7 @@ const issueRule = "an issue takes its full URL — a bare number has no reposito
 // validIssue reports whether an issue is one the service can do anything with.
 // Empty is fine: not every ask is about an issue.
 func validIssue(issue string) bool {
-	return issue == "" || isURL(issue)
-}
-
-func isURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+	return issue == "" || issueref.IsURL(issue)
 }
 
 // What a session's row says, worked out by the service rather than declared by

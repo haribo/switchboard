@@ -17,6 +17,7 @@ import (
 
 	"switchboard/internal/api"
 	"switchboard/internal/build"
+	"switchboard/internal/issueref"
 	"switchboard/internal/store"
 	"switchboard/internal/web"
 )
@@ -229,6 +230,9 @@ func serve(args []string) error {
 
 	srv := &http.Server{Addr: *addr, Handler: api.New(st, cfg, web.Page())}
 	fmt.Println(build.Line())
+	// Say what is in the environment but not read. The config file is never
+	// overwritten by an upgrade, so a dropped setting survives in it silently.
+	reportStraySettings(os.Environ(), os.Stdout)
 	fmt.Printf("listening on http://%s — database %s (schema %d)\n", *addr, *db, store.SchemaTarget())
 	fmt.Printf("batching %s, floor %s, blocked %s, undo %s\n",
 		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow)
@@ -247,7 +251,7 @@ const issueRule = "--issue takes the issue's full URL — a bare number has no r
 // against a repository the session was not working in links to somebody else's
 // issue.
 func checkIssue(issue string) error {
-	if issue == "" || strings.HasPrefix(issue, "http://") || strings.HasPrefix(issue, "https://") {
+	if issue == "" || issueref.IsURL(issue) {
 		return nil
 	}
 	return errors.New(issueRule)
@@ -699,15 +703,10 @@ func issueSuffix(issue string) string {
 	if issue == "" {
 		return ""
 	}
-	return " #" + issue
+	return " " + issueref.Label(issue)
 }
 
-func issueTag(issue string) string {
-	if issue == "" {
-		return ""
-	}
-	return "#" + issue
-}
+func issueTag(issue string) string { return issueref.Label(issue) }
 
 func linkSuffix(l string) string {
 	if l == "" {

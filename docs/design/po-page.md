@@ -27,6 +27,14 @@ The first two are **worked out by the service**, not declared. A session already
 says what it published; asking it to also keep a status in sync would add a field
 that can go stale. Derivation cannot go stale.
 
+**An issue shows as `#1886`, and links to the address it came from.** The number
+is the URL's last segment, and only when that segment really is a number: an
+address that is not an issue URL is shown as it stands, with no `#`, because a
+reference that was not understood must look like an address rather than like a
+reference to issue "milestones". One definition serves both renderings — the page
+and the manager's board diverged once, the board printing `#https://…` while the
+page already showed `#1886`.
+
 **Issues link because the session sends the whole address.** It knows the
 repository it works in; the service does not, holds none, and will not be given
 one — naming another repository is what this repository must not do, and a bare

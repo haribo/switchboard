@@ -38,6 +38,25 @@ after cloning, or the file is just a sign with no door behind it. A build is
 stamped with `git describe --tags --always --dirty`, so `just health` always says
 which commit is answering — and says `-dirty` when it is not one.
 
+## What the service says at startup
+
+The version, the database and the batching settings — and, when there are any,
+the `SWITCHBOARD_*` variables it is **not** reading:
+
+```
+no longer used, safe to delete: SWITCHBOARD_REPO (issues now carry their full URL)
+not a setting, ignored (misspelled?): SWITCHBOARD_DEBOUCE
+```
+
+Two lines, deliberately apart. A setting the product dropped is a line to delete;
+a misspelled one is a line to correct, and the operator would otherwise conclude
+the batching is broken rather than that they typed `DEBOUCE`. The config file is
+never overwritten by an upgrade, which is why a dropped setting survives in it —
+so it is named rather than ignored.
+
+It is a warning, never a refusal: a stale line must not stop a service that would
+otherwise run correctly.
+
 ## Update
 
 ```bash
