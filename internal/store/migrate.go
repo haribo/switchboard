@@ -84,6 +84,19 @@ var migrations = []migration{
 			`ALTER TABLE events ADD COLUMN closed_by TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 3,
+		name:    "carry a request to put an ask in plain words",
+		stmts: []string{
+			// Set when the PO asks for the ask to be reworded, cleared when the
+			// plain-words version arrives. The event stays open throughout: it
+			// is still waiting for an answer, just not in those terms.
+			`ALTER TABLE events ADD COLUMN explain_pending INTEGER NOT NULL DEFAULT 0`,
+			// The plain-words version, sanitized like any other body. Kept
+			// alongside the original, never replacing it.
+			`ALTER TABLE events ADD COLUMN explanation TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // SchemaTarget is the schema version this binary expects.

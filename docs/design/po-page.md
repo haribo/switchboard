@@ -68,6 +68,23 @@ What is addressed to the PO, and nothing else. Each ask carries:
 
 A `validation` also carries its link, opened in another tab.
 
+**When the wording is the obstacle**, *Explain simply* records that the PO cannot
+act on the ask as written. It sits below the answers and is quieter than them:
+asking for a rewording is not answering, and a control of equal weight next to
+the options invites a click meant for one of them.
+
+The ask stays on the page — it is still waiting for an answer, just not in those
+terms — and says the request was made, so the PO does not click again wondering
+whether the first one landed. The plain-words version arrives **beside** the
+original, never in its place: the PO may want the first wording back, and a later
+reader needs to see what was actually asked. It can be asked again if the
+rewording did not help.
+
+This is the one case where a card is rebuilt. New content arrived, and a card
+that never changed would leave the PO staring at the wording they already said
+they could not use — so the rule bends here, and only here, and still never while
+somebody is typing into it.
+
 ## Nothing moves
 
 - A card is **built once and never redrawn**. Whatever the PO typed stays, for as

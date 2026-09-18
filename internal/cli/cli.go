@@ -33,6 +33,7 @@ const usage = `switchboard — coordination for parallel sessions
   ack      mark as read what only had to be read
   undo     take back an answer just given
   withdraw close an open ask that turned out not to need an answer
+  explain  say the same thing in plain words, when the PO asks for it
   retire   remove a session's row from the table
   watch    the grouped signal: one line when a batch needs handling
   db       look after the database: status, backup, migrate
@@ -69,6 +70,8 @@ func Run(args []string) int {
 		err = undo(args[1:])
 	case "withdraw":
 		err = withdraw(args[1:])
+	case "explain":
+		err = explain(args[1:])
 	case "retire":
 		err = retire(args[1:])
 	case "watch":
@@ -86,6 +89,13 @@ func Run(args []string) int {
 		return 2
 	}
 	if err != nil {
+		var x explainWantedError
+		if errors.As(err, &x) {
+			// Not a failure either: the PO cannot act on the wording. Say the
+			// same thing differently, then wait again.
+			fmt.Println(x.Error())
+			return ExitExplainWanted
+		}
 		var w withdrawnError
 		if errors.As(err, &w) {
 			// Not a failure: the ask was closed without an answer. A distinct
@@ -109,6 +119,23 @@ type withdrawnError struct {
 	id    int64
 	title string
 	by    string
+}
+
+// ExitExplainWanted is the exit code of `await` when the PO asked for the
+// question to be put in plain words. It is not an answer and not a refusal:
+// reword it with `switchboard explain`, then wait again.
+const ExitExplainWanted = 4
+
+// explainWantedError reports that the wording, not the question, is the obstacle.
+type explainWantedError struct {
+	id    int64
+	title string
+}
+
+func (e explainWantedError) Error() string {
+	return fmt.Sprintf("explain: the PO cannot act on %q as worded (event %d) — "+
+		"say the same thing in plain words with `switchboard explain %d --as <you> --body \"…\"`, then await again",
+		e.title, e.id, e.id)
 }
 
 func (e withdrawnError) Error() string {
@@ -347,6 +374,9 @@ func waitReply(c *client, id int64, timeout time.Duration) error {
 		if got && e.State == store.StateWithdrawn {
 			return withdrawnError{id: e.ID, title: e.Title, by: e.ClosedBy}
 		}
+		if got && e.ExplainPending {
+			return explainWantedError{id: e.ID, title: e.Title}
+		}
 	}
 }
 
@@ -542,6 +572,28 @@ func withdraw(args []string) error {
 		return err
 	}
 	fmt.Printf("event %d withdrawn by %s\n", e.ID, e.ClosedBy)
+	return nil
+}
+
+// explain publishes the plain-words version of an ask the PO could not act on.
+func explain(args []string) error {
+	fs, server := flags("explain")
+	as := fs.String("as", "", "the ask's author, or manager (required)")
+	body := fs.String("body", "", "the same thing said differently (required)")
+	id, err := oneID(parse(fs, args))
+	if err != nil {
+		return err
+	}
+	if *as == "" || *body == "" {
+		return errors.New("--as and --body are required")
+	}
+	var e store.Event
+	if _, err := newClient(*server).call(http.MethodPost,
+		fmt.Sprintf("/v1/events/%d/explanation", id),
+		map[string]string{"author": *as, "body": *body}, &e); err != nil {
+		return err
+	}
+	fmt.Printf("event %d explained — the original wording is kept\n", e.ID)
 	return nil
 }
 

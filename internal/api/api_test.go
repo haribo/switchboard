@@ -808,3 +808,131 @@ func TestASessionWhoseNameIsNowInvalidCanStillBeRetired(t *testing.T) {
 func issueURL(n int) string {
 	return fmt.Sprintf("https://github.com/acme/app/issues/%d", n)
 }
+
+// An ask written in the dev's vocabulary can reach the PO as something only the
+// dev holds the terms for. Issue #12.
+func TestThePOCanAskForAnAskToBePutInPlainWords(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]any{
+		"author": "acme-dev3", "kind": "question", "audience": "po",
+		"title": "CSV export pages past 10,000 rows — keyset or offset?",
+	}, http.StatusCreated)
+	id := int64(created["id"].(float64))
+	path := "/v1/events/" + itoa(id)
+
+	asked := h.mustDo("POST", path+"/explain", nil, http.StatusOK)
+	if asked["explain_pending"] != true {
+		t.Fatalf("explain_pending = %v, want true", asked["explain_pending"])
+	}
+	// The ask is still open: it waits for an answer, just not in those terms.
+	if asked["state"] != "open" {
+		t.Fatalf("state = %v, want it still open", asked["state"])
+	}
+	if got := len(list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["for_you"])); got != 1 {
+		t.Fatal("the ask left the PO's page")
+	}
+
+	// Clicking twice raises no second request.
+	again := h.mustDo("POST", path+"/explain", nil, http.StatusOK)
+	if again["explain_pending"] != true {
+		t.Fatal("a second ask cleared the first")
+	}
+
+	explained := h.mustDo("POST", path+"/explanation", map[string]string{
+		"author": "acme-dev3",
+		"body":   `<p>Paging by <a href="https://example.com/keyset">keyset</a> is faster; offset is simpler.</p>`,
+	}, http.StatusOK)
+	if explained["explain_pending"] == true {
+		t.Fatal("publishing did not clear the request")
+	}
+	if !strings.Contains(explained["explanation"].(string), "keyset") {
+		t.Fatalf("explanation = %v", explained["explanation"])
+	}
+	// The original wording is kept: the PO may want it back.
+	if !strings.Contains(explained["title"].(string), "keyset or offset") {
+		t.Fatal("the original wording was replaced")
+	}
+
+	// And it may be asked again if the rewording did not help.
+	h.mustDo("POST", path+"/explain", nil, http.StatusOK)
+}
+
+// Three ways to stop waiting, and a caller must tell them apart.
+func TestAwaitReturnsWhenAReWordingIsAsked(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev3", "kind": "question", "title": "keyset or offset?",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+
+	done := make(chan map[string]any, 1)
+	go func() { done <- h.mustDo("GET", path+"/reply?wait=10", nil, http.StatusOK) }()
+	time.Sleep(150 * time.Millisecond)
+	h.mustDo("POST", path+"/explain", nil, http.StatusOK)
+
+	select {
+	case e := <-done:
+		if e["explain_pending"] != true {
+			t.Fatalf("await came back with explain_pending = %v", e["explain_pending"])
+		}
+		if _, hasReply := e["reply"]; hasReply {
+			t.Fatal("a rewording request came back carrying a reply")
+		}
+		if e["state"] != "open" {
+			t.Fatalf("state = %v — this is not a verdict, the ask still stands", e["state"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("await did not return — it would have waited out its timeout")
+	}
+}
+
+func TestExplainingIsRefusedWhereItShouldBe(t *testing.T) {
+	h := newHarness(t)
+	info := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev5", "kind": "info", "title": "822 tests green",
+	}, http.StatusCreated)
+	infoPath := "/v1/events/" + itoa(int64(info["id"].(float64)))
+	// An info asks nothing, so there is nothing to reword.
+	h.mustDo("POST", infoPath+"/explain", nil, http.StatusConflict)
+
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev3", "kind": "question", "audience": "po", "title": "keyset or offset?",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+	h.mustDo("POST", path+"/explain", nil, http.StatusOK)
+
+	// Somebody else's ask is not theirs to reword.
+	h.mustDo("POST", path+"/explanation",
+		map[string]string{"author": "acme-dev9", "body": "x"}, http.StatusForbidden)
+	// An explanation with nothing in it is not one.
+	h.mustDo("POST", path+"/explanation",
+		map[string]string{"author": "acme-dev3", "body": "  "}, http.StatusBadRequest)
+	// The manager may do it for a session that is gone.
+	h.mustDo("POST", path+"/explanation",
+		map[string]string{"author": "manager", "body": "<p>Which paging strategy.</p>"}, http.StatusOK)
+
+	// Once answered, the wording is no longer the question.
+	h.mustDo("POST", path+"/replies", map[string]string{"author": "po", "text": "keyset"}, http.StatusCreated)
+	h.mustDo("POST", path+"/explain", nil, http.StatusConflict)
+}
+
+// The explanation is a body like any other: it is sanitized on the way in.
+func TestAnExplanationIsSanitized(t *testing.T) {
+	h := newHarness(t)
+	created := h.mustDo("POST", "/v1/events", map[string]string{
+		"author": "acme-dev3", "kind": "question", "audience": "po", "title": "keyset or offset?",
+	}, http.StatusCreated)
+	path := "/v1/events/" + itoa(int64(created["id"].(float64)))
+
+	out := h.mustDo("POST", path+"/explanation", map[string]string{
+		"author": "acme-dev3",
+		"body":   `<p>Read <a href="https://example.com">this</a>.</p><script>alert(1)</script>`,
+	}, http.StatusOK)
+	body := out["explanation"].(string)
+	if strings.Contains(strings.ToLower(body), "<script") {
+		t.Fatalf("a script survived: %q", body)
+	}
+	if !strings.Contains(body, "example.com") {
+		t.Fatalf("the link was dropped: %q", body)
+	}
+}

@@ -283,6 +283,7 @@ func (s *Store) queryEvents(where string, args ...any) ([]Event, error) {
 	const base = `
 		SELECT e.id, e.author, e.role, e.kind, e.title, e.body, e.link, e.issue, e.audience,
 		       e.options, e.state, e.created_at, e.closed_at, e.closed_by,
+		       e.explain_pending, e.explanation,
 		       r.id, r.author, r.text, r.option, r.created_at, r.seen_at
 		FROM events e
 		LEFT JOIN replies r ON r.event_id = e.id
@@ -303,6 +304,7 @@ func (s *Store) queryEvents(where string, args ...any) ([]Event, error) {
 		var rCreated, rSeen sql.NullInt64
 		if err := rows.Scan(&e.ID, &e.Author, &e.Role, &e.Kind, &e.Title, &e.Body, &e.Link, &e.Issue, &e.Audience,
 			&opts, &e.State, &created, &closed, &e.ClosedBy,
+			&e.ExplainPending, &e.Explanation,
 			&rID, &rAuthor, &rText, &rOption, &rCreated, &rSeen); err != nil {
 			return nil, err
 		}
@@ -381,6 +383,60 @@ func (s *Store) Withdraw(eventID int64, by string) (Event, error) {
 		return Event{}, err
 	}
 	if err := tx.Commit(); err != nil {
+		return Event{}, err
+	}
+	s.notify()
+	return s.Event(eventID)
+}
+
+// ErrNotAnAsk is returned when something is asked of an event that answers to
+// nobody — an `info` has no wording to argue with.
+var ErrNotAnAsk = errors.New("this event asks nothing")
+
+// AskToExplain records that the PO wants an ask put in plain words.
+//
+// It does not change the event's state: the question is still open and still
+// waiting for an answer, just not in the terms it was written in. Asking twice
+// is the same as asking once — a second click must not raise a second request.
+func (s *Store) AskToExplain(eventID int64) (Event, error) {
+	e, err := s.Event(eventID)
+	if err != nil {
+		return Event{}, err
+	}
+	if e.State != StateOpen {
+		return Event{}, fmt.Errorf("%w: it is %s", ErrNotOpen, e.State)
+	}
+	if e.Kind == KindInfo {
+		return Event{}, ErrNotAnAsk
+	}
+	if e.ExplainPending {
+		return e, nil // already asked; clicking twice changes nothing
+	}
+	if _, err := s.db.Exec(`UPDATE events SET explain_pending = 1 WHERE id = ?`, eventID); err != nil {
+		return Event{}, err
+	}
+	s.notify()
+	return s.Event(eventID)
+}
+
+// Explain publishes the plain-words version and clears the request.
+//
+// The author rewrites their own ask; the manager may do it for them, because
+// dispatching is their job and a session can be gone — a quota exhausted, a
+// session retired — while the PO is still holding the card.
+func (s *Store) Explain(eventID int64, by, html string) (Event, error) {
+	e, err := s.Event(eventID)
+	if err != nil {
+		return Event{}, err
+	}
+	if e.State != StateOpen {
+		return Event{}, fmt.Errorf("%w: it is %s", ErrNotOpen, e.State)
+	}
+	if by != e.Author && by != AudienceManager {
+		return Event{}, fmt.Errorf("%w: %s was raised by %s", ErrNotAllowed, by, e.Author)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE events SET explanation = ?, explain_pending = 0 WHERE id = ?`, html, eventID); err != nil {
 		return Event{}, err
 	}
 	s.notify()

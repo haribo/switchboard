@@ -125,6 +125,24 @@
   .desc ul, .desc ol { margin: 8px 0; padding-left: 20px; }
   .open-link { display: inline-block; margin-bottom: 14px; font-weight: 600; color: var(--accent); }
 
+  /* The plain-words version, beside the original — never in place of it. */
+  .plain {
+    border-left: 2px solid var(--accent); background: var(--shade);
+    padding: 10px 14px; margin: 0 0 14px; border-radius: 0 3px 3px 0;
+  }
+  .plain .lead {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 4px;
+  }
+  .plain .desc { margin: 0; color: var(--ink); }
+  .asked { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+  /* Secondary to answering: quieter, and out of the row of answers. */
+  button.aside {
+    margin-top: 12px; padding: 4px 10px; font-size: 13px;
+    color: var(--muted); border-color: transparent; background: transparent;
+  }
+  button.aside:hover:not(:disabled) { color: var(--accent); border-color: var(--line); }
+
   .choices { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   button {
     font: inherit; font-size: 14.5px; cursor: pointer;
@@ -396,6 +414,16 @@ function buildCard(e) {
     card.append(a);
   }
 
+  // The plain-words version, when one has been published.
+  if (e.explanation) {
+    const plain = el("div", "plain");
+    plain.append(el("div", "lead", "in plain words"));
+    const d = el("div", "desc");
+    d.innerHTML = e.explanation; // sanitized server-side, see internal/richtext
+    plain.append(d);
+    card.append(plain);
+  }
+
   const send = (payload, button) => {
     for (const b of card.querySelectorAll("button")) b.disabled = true;
     fetch(`/v1/events/${e.id}/replies`, {
@@ -438,6 +466,28 @@ function buildCard(e) {
   input.addEventListener("keydown", ev => { if (ev.key === "Enter") submit(); });
   free.append(input, ok);
   card.append(free);
+
+  // Asking for a rewording is not answering, so it does not sit among the
+  // answers: it is quieter, and below them. The card says the request was made
+  // so the PO does not click again wondering whether the first one landed.
+  if (e.explain_pending) {
+    card.append(el("p", "asked", "Waiting for this to be put in plain words."));
+  } else if (e.kind !== "info") {
+    const ask = el("button", "aside", e.explanation ? "Ask again in plainer words" : "Explain simply");
+    ask.type = "button";
+    ask.addEventListener("click", () => {
+      ask.disabled = true;
+      fetch(`/v1/events/${e.id}/explain`, { method: "POST" })
+        .then(r => { if (!r.ok) throw new Error(r.status); tick(); })
+        .catch(() => {
+          ask.disabled = false;
+          if (!card.querySelector(".note")) {
+            card.append(el("p", "note", "Could not ask. Try again."));
+          }
+        });
+    });
+    card.append(ask);
+  }
   return card;
 }
 
@@ -520,17 +570,37 @@ function renderRecent(recent) {
   }
 }
 
+// explainState is what would make a card look different: a request recorded, or
+// an explanation published.
+function explainState(e) {
+  return (e.explain_pending ? "1" : "0") + ":" + (e.explanation ? e.explanation.length : 0);
+}
+
 function renderAsks(items) {
   const box = document.getElementById("asks");
   const seen = new Set();
   for (const e of items) {
     seen.add(e.id);
-    if (!cards.has(e.id)) {
+    const known = cards.get(e.id);
+    if (!known) {
       const card = buildCard(e);
+      card.dataset.explained = explainState(e);
       cards.set(e.id, card);
       box.append(card);
+    } else if (known.dataset.explained !== explainState(e)) {
+      // The plain-words version arrived, or a request for one was recorded.
+      // That is new content, so the card is rebuilt — but only then, and only
+      // if nobody is typing into it.
+      const input = known.querySelector("input");
+      const typing = input && (input.value.trim() !== "" || document.activeElement === input);
+      if (!typing) {
+        const fresh = buildCard(e);
+        fresh.dataset.explained = explainState(e);
+        known.replaceWith(fresh);
+        cards.set(e.id, fresh);
+      }
     }
-    // An existing card is never rebuilt: whatever the PO typed stays.
+    // Otherwise a card is never rebuilt: whatever the PO typed stays.
   }
   for (const [id, card] of cards) {
     if (seen.has(id)) continue;

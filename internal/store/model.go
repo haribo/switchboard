@@ -80,7 +80,14 @@ type Event struct {
 	// ClosedBy is who withdrew the event, when it was withdrawn rather than
 	// answered. Empty otherwise.
 	ClosedBy string `json:"closed_by,omitempty"`
-	Reply    *Reply `json:"reply,omitempty"`
+	// ExplainPending is true while the PO has asked for this to be put in plain
+	// words and the author has not answered that yet.
+	ExplainPending bool `json:"explain_pending,omitempty"`
+	// Explanation is the plain-words version, sanitized HTML. It sits beside the
+	// original wording, never in place of it: the PO may want the first one back,
+	// and a later reader needs to see what was actually asked.
+	Explanation string `json:"explanation,omitempty"`
+	Reply       *Reply `json:"reply,omitempty"`
 }
 
 // Reply is an answer to an event, kept for good.

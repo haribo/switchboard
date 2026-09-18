@@ -95,8 +95,14 @@ switchboard withdraw "$id" --as acme-dev3
 switchboard retire acme-dev3
 ```
 
-`await` exits **3** when the ask was withdrawn instead of answered, so a session
-can tell "no answer is coming" from a verdict without reading the message.
+```bash
+# the PO could not act on how I worded it — say it again, plainly
+switchboard explain "$id" --as acme-dev3 --body "<p>Which way the export fetches page 2.</p>"
+```
+
+`await` stops on three outcomes, and exits differently for each so a session can
+branch without reading prose: **0** an answer, **3** the ask was withdrawn, **4**
+the PO asked for it to be put in plain words — reword it and await again.
 
 `--wait 2h` on `event` publishes and waits in one go.
 

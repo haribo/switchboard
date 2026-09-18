@@ -193,6 +193,8 @@ func (s *Server) table() []route {
 		{http.MethodPost, "/v1/events/{id}/replies", s.addReply},
 		{http.MethodPost, "/v1/events/{id}/undo", s.undo},
 		{http.MethodPost, "/v1/events/{id}/withdraw", s.withdraw},
+		{http.MethodPost, "/v1/events/{id}/explain", s.askToExplain},
+		{http.MethodPost, "/v1/events/{id}/explanation", s.explain},
 		{http.MethodPost, "/v1/events/{id}/reroute", s.reroute},
 
 		{http.MethodPut, "/v1/sessions/{name}", s.putSession},
@@ -312,10 +314,11 @@ func (s *Server) awaitReply(w http.ResponseWriter, r *http.Request) {
 			failStore(w, err)
 			return
 		}
-		// An answer is one way to stop waiting; a withdrawal is another. A
-		// caller blocked on its own question has to tell them apart, or it
-		// resumes as if it had a verdict.
-		if e.Reply != nil || e.State != store.StateOpen {
+		// Three ways to stop waiting, and a caller has to tell them apart or it
+		// resumes as if it had a verdict: an answer, a withdrawal, and the PO
+		// asking for the question to be put in plain words — which is not an
+		// answer at all, but something to do before one can come.
+		if e.Reply != nil || e.State != store.StateOpen || e.ExplainPending {
 			write(w, http.StatusOK, e)
 			return
 		}
@@ -500,6 +503,76 @@ type UndoResponse struct {
 	WasRead bool `json:"was_read"`
 	// CatchUpID is the event raised to the manager so they can reach that dev.
 	CatchUpID int64 `json:"catch_up_id,omitempty"`
+}
+
+// askToExplain records that the PO cannot act on an ask as worded.
+//
+// The ask stays open: it is still waiting for an answer, just not in the terms
+// it was written in. Asking twice is the same as asking once.
+func (s *Server) askToExplain(w http.ResponseWriter, r *http.Request) {
+	id, ok := eventID(w, r)
+	if !ok {
+		return
+	}
+	e, err := s.st.AskToExplain(id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such event")
+		return
+	case errors.Is(err, store.ErrNotAnAsk):
+		fail(w, http.StatusConflict, "an info asks nothing — there is nothing to reword")
+		return
+	case errors.Is(err, store.ErrNotOpen):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, s.withIssueURLs([]store.Event{e})[0])
+}
+
+type explanationRequest struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
+}
+
+// explain publishes the plain-words version of an ask.
+func (s *Server) explain(w http.ResponseWriter, r *http.Request) {
+	id, ok := eventID(w, r)
+	if !ok {
+		return
+	}
+	var req explanationRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Author = strings.TrimSpace(req.Author)
+	switch {
+	case req.Author == "":
+		fail(w, http.StatusBadRequest, "author is required")
+		return
+	case strings.TrimSpace(req.Body) == "":
+		fail(w, http.StatusBadRequest, "an explanation needs a body — that is the whole point of it")
+		return
+	}
+
+	e, err := s.st.Explain(id, req.Author, richtext.Clean(req.Body))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such event")
+		return
+	case errors.Is(err, store.ErrNotAllowed):
+		fail(w, http.StatusForbidden, err.Error())
+		return
+	case errors.Is(err, store.ErrNotOpen):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, s.withIssueURLs([]store.Event{e})[0])
 }
 
 type withdrawRequest struct {

@@ -336,6 +336,97 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/events/{id}/explain:
+    post:
+      tags: [po]
+      operationId: askToExplain
+      summary: Ask for an ask to be put in plain words
+      description: |
+        An ask is written by the session that raised it, in the vocabulary it was
+        working in. When it reaches the PO as something only the dev holds the
+        terms for, the PO has no good option: answering is a guess, leaving the
+        card keeps it counting, and going to ask the manager means leaving the
+        page — the one thing the PO should not have to do.
+
+        This records that the wording is the obstacle. **The ask stays open**: it
+        is still waiting for an answer, just not in those terms. A session
+        blocked in `GET /v1/events/{id}/reply` returns at once with
+        `explain_pending` set and no `reply` — a third outcome, distinct from an
+        answer and from a withdrawal.
+
+        Asking twice is the same as asking once: a second click raises no second
+        request, and answers `200` with the event unchanged.
+
+        Refused on an `info`, which asks nothing, and on an event that is no
+        longer open.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      responses:
+        "200":
+          description: The ask, with `explain_pending` set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: An `info`, or an event that is no longer open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/events/{id}/explanation:
+    post:
+      tags: [events]
+      operationId: explain
+      summary: Publish the plain-words version of an ask
+      description: |
+        The **author** rewrites their own ask; the **manager** may do it for
+        them, because dispatching is their job and a session can be gone — a
+        quota exhausted, a session retired — while the PO is still holding the
+        card.
+
+        The explanation sits **beside** the original wording, never in place of
+        it: the PO may want the first one back, and a later reader needs to see
+        what was actually asked. It is sanitized on the way in like any other
+        body.
+
+        Publishing clears the request. The PO may ask again afterwards if the
+        rewording did not help.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [author, body]
+              properties:
+                author:
+                  type: string
+                  description: The ask's author, or `manager`.
+                body:
+                  type: string
+                  description: The same thing said differently. Same whitelist as any body.
+      responses:
+        "200":
+          description: The ask, carrying its explanation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: Not the author, and not the manager.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The event is no longer open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/events/{id}/reroute:
     post:
       tags: [manager]
@@ -730,6 +821,16 @@ components:
         closed_by:
           type: string
           description: Who withdrew it. Present only on a withdrawn event.
+        explain_pending:
+          type: boolean
+          description: |
+            The PO has asked for this to be put in plain words and the author has
+            not answered that yet. The ask is still open.
+        explanation:
+          type: string
+          description: |
+            The plain-words version, sanitized HTML. Sits beside the original
+            wording, never in place of it.
         reply: { $ref: "#/components/schemas/Reply" }
       required: [id, author, role, kind, title, audience, state, created_at]
 
