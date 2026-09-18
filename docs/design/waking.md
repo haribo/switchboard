@@ -59,6 +59,22 @@ of the newest item it covered**. An item at or before that cursor is already
 announced. The cursor lives in the database: it outlives the manager session,
 which finds its pending batch again when it re-arms.
 
+## What counts as urgent
+
+A `blocked` event, and a rewording request. Both mean somebody is stopped,
+waiting on an answer they cannot get: a dev that cannot move, or the PO in front
+of a page they cannot act on. [ADR-0002](../adr/0002-blocked-shortens-the-batch.md)
+argues the first; the second has the same shape, and the same cost when it
+arrives late — the PO concludes the button does nothing.
+
+**The line names them apart.** Urgency is about the delay, not about the
+wording: announcing a rewording request as "blocked" would send the manager
+hunting for a stopped session that does not exist.
+
+```
+3 events to handle, 1 blocked, 1 to reword
+```
+
 ## Urgency does not break the floor
 
 A `blocked` shortens the batching delay; it does not lift the floor. A dev that
