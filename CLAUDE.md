@@ -89,12 +89,5 @@ One rule per line where possible.
 
 ## Git
 
-- `develop` is where work is committed; `main` carries the stable versions
-- Conventional commits, one line, no AI references
-- One issue, one commit. Commit the moment an issue is green, before starting the
-  next — not at the end of a batch, where the boundary is already lost
-- Read `git status` before committing. `git add -A` stages whatever is lying
-  around, and the message gets written for the work remembered, not the work staged
+- Git conventions: follow `docs/git.md` strictly
 - Never commit or push without explicit approval
-- A deployed build is stamped with `git describe --dirty`, so what runs is always
-  traceable to a commit — or visibly not one

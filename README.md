@@ -192,4 +192,5 @@ just logs      # journalctl -f on the unit
 - [docs/design/waking.md](docs/design/waking.md) — batching, in full
 - [docs/design/po-page.md](docs/design/po-page.md) — what the page shows and why
 - [docs/design/operations.md](docs/design/operations.md) — install, update, roll back, add a migration
+- [docs/git.md](docs/git.md) — branches, commit messages, what goes in one commit
 - [docs/adr/](docs/adr/) — the decisions, and what each one ruled out
