@@ -10,12 +10,13 @@ import (
 	"html"
 	"io/fs"
 	"net/http"
-	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"switchboard/internal/build"
+	"switchboard/internal/issueref"
 	"switchboard/internal/richtext"
 	"switchboard/internal/store"
 	"switchboard/internal/wake"
@@ -31,48 +32,35 @@ type Config struct {
 	// UndoWindow is how long the person who answered can take it back. Short on
 	// purpose: it catches the wrong button, not a change of mind.
 	UndoWindow time.Duration
-	// RepoURL is a convenience for the common case where every session works in
-	// one repository: a bare issue number is resolved against it. It is never
-	// required — a session that sends a full URL needs no configuration at all,
-	// and sessions across several repositories each send their own.
-	RepoURL string
+	// QuietAfter is how long a session may say nothing before the table marks
+	// it. It marks silence, not death: the service observes that nothing has
+	// arrived, and cannot know why. A session may be working on one long task,
+	// or gone.
+	QuietAfter time.Duration
 }
 
-// IssueURL resolves what a session sent into an address, or "" when it cannot.
+// IssueURL is the address of an issue, or "" when there is none to give.
 //
-// A session knows the repository it is working in; the service does not, and
-// does not guess. So a full URL is taken as it stands, and a bare number is only
-// resolved when a repository has been configured.
-func (c Config) IssueURL(issue string) string {
-	if issue == "" {
-		return ""
-	}
-	if isURL(issue) {
-		return issue
-	}
-	if c.RepoURL == "" {
-		return ""
-	}
-	return strings.TrimRight(c.RepoURL, "/") + "/issues/" + strings.TrimPrefix(issue, "#")
-}
+// The service holds no repository of its own to resolve a bare number against,
+// and will not be given one: naming another repository is what this repository
+// must not do, and a number resolved against a repository the session was not
+// working in produces a link to somebody else's issue — worse than no link.
+//
+// New events are refused a bare number on the way in. Rows written before that
+// rule keep theirs, and render as plain text.
+func (c Config) IssueURL(issue string) string { return issueref.URL(issue) }
 
-// IssueLabel is what the page shows: "#142", whether the session sent the number
-// or the whole address.
-func (c Config) IssueLabel(issue string) string {
-	if issue == "" {
-		return ""
-	}
-	if isURL(issue) {
-		if n := path.Base(strings.TrimRight(issue, "/")); n != "" && n != "." && n != "/" {
-			return "#" + n
-		}
-		return issue
-	}
-	return "#" + strings.TrimPrefix(issue, "#")
-}
+// IssueLabel is what the page and the board show: `#1886`, whatever form the
+// value takes. See package issueref.
+func (c Config) IssueLabel(issue string) string { return issueref.Label(issue) }
 
-func isURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+// issueRule is what an issue has to be, said the way every other rule is.
+const issueRule = "an issue takes its full URL — a bare number has no repository"
+
+// validIssue reports whether an issue is one the service can do anything with.
+// Empty is fine: not every ask is about an issue.
+func validIssue(issue string) bool {
+	return issue == "" || issueref.IsURL(issue)
 }
 
 // What a session's row says, worked out by the service rather than declared by
@@ -80,23 +68,48 @@ func isURL(s string) bool {
 const (
 	RowBlocked = "blocked"        // an open `blocked` event
 	RowOnYou   = "waiting_on_you" // an open ask sitting with the PO
+	// RowOnPeer is a session paused on another session's work. Like the two
+	// above it is derived, not declared: it lifts itself when the session it
+	// names stops declaring the issue it was waiting for.
+	RowOnPeer  = "waiting_on_peer"
 	RowWorking = "working"
 	RowIdle    = "idle"
 )
 
 // SessionRow is one line of the sessions table.
 type SessionRow struct {
-	Name       string    `json:"name"`
-	State      string    `json:"state"`
-	Issue      string    `json:"issue,omitempty"`
-	IssueLabel string    `json:"issue_label,omitempty"`
-	IssueURL   string    `json:"issue_url,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	SinceAt    time.Time `json:"since_at"`
+	Name       string `json:"name"`
+	State      string `json:"state"`
+	Issue      string `json:"issue,omitempty"`
+	IssueLabel string `json:"issue_label,omitempty"`
+	IssueURL   string `json:"issue_url,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	// WaitingOn is the session this one is paused on, present only while the
+	// pause holds — so a reader is never shown a dependency that has lifted.
+	WaitingOn string `json:"waiting_on,omitempty"`
+	// WaitingForLabel and WaitingForURL render the issue it is paused on.
+	WaitingForLabel string `json:"waiting_for_label,omitempty"`
+	WaitingForURL   string `json:"waiting_for_url,omitempty"`
+	// SinceAt answers "how long has it been on this", and does not move on a
+	// repeated declaration — see the store.
+	SinceAt time.Time `json:"since_at"`
+	// UpdatedAt answers the other question the table has to carry: "is anything
+	// still arriving from it". A session declaring every minute and one that
+	// stopped an hour ago have the same SinceAt.
+	UpdatedAt time.Time `json:"updated_at"`
+	// Quiet is set once nothing has arrived for longer than the service's
+	// threshold. It says the row has gone silent, never that the session is
+	// dead: the service cannot observe that, and must not display a distinction
+	// it has no means of observing.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // DefaultConfig is the shipped behaviour.
-var DefaultConfig = Config{Wake: wake.Default, UndoWindow: 10 * time.Second}
+var DefaultConfig = Config{
+	Wake:       wake.Default,
+	UndoWindow: 10 * time.Second,
+	QuietAfter: 30 * time.Minute,
+}
 
 // Server routes the HTTP surface.
 type Server struct {
@@ -114,7 +127,58 @@ func New(st *store.Store, cfg Config, page fs.FS) *Server {
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A session name is checked here, ahead of routing, because the router
+	// answers first otherwise: a name carrying a slash lands on a path with no
+	// handler, and the caller gets "405 Method Not Allowed" — which says
+	// nothing about what it did wrong, to a caller that is usually a program.
+	//
+	// Only on the call that creates a row. Retiring one must work whatever it
+	// is called: names were unchecked before this rule existed, and a row the
+	// current rule rejects would otherwise be stuck on the PO's table for good
+	// — the permanent row that retiring exists to remove.
+	if r.Method == http.MethodPut {
+		if name, ok := strings.CutPrefix(r.URL.Path, sessionsPrefix); ok {
+			if err := validSessionName(name); err != nil {
+				fail(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+	}
+	s.mux.ServeHTTP(w, r)
+}
+
+const sessionsPrefix = "/v1/sessions/"
+
+// maxSessionName bounds a name so it stays readable in the PO's table.
+const maxSessionName = 64
+
+// sessionName is what a session may be called: the shape of the names Claude
+// Code gives sessions, and nothing that needs escaping in a path.
+var sessionName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validSessionName reports why a name cannot be used, in the shape of every
+// other message this API answers with.
+func validSessionName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("a session name is required")
+	case len(name) > maxSessionName:
+		return fmt.Errorf("a session name is at most %d characters — got %d", maxSessionName, len(name))
+	case !sessionName.MatchString(name):
+		return fmt.Errorf("a session name holds letters, digits, '-', '_' or '.' — got %q", clip(name, 40))
+	}
+	return nil
+}
+
+// clip keeps a rejected value short in the answer it is quoted back in.
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
 
 // route is one entry of the routing table. The table is the single place a
 // route is declared, so the specification can be checked against it.
@@ -138,9 +202,13 @@ func (s *Server) table() []route {
 		{http.MethodPost, "/v1/events/{id}/seen", s.markSeen},
 		{http.MethodPost, "/v1/events/{id}/replies", s.addReply},
 		{http.MethodPost, "/v1/events/{id}/undo", s.undo},
+		{http.MethodPost, "/v1/events/{id}/withdraw", s.withdraw},
+		{http.MethodPost, "/v1/events/{id}/explain", s.askToExplain},
+		{http.MethodPost, "/v1/events/{id}/explanation", s.explain},
 		{http.MethodPost, "/v1/events/{id}/reroute", s.reroute},
 
 		{http.MethodPut, "/v1/sessions/{name}", s.putSession},
+		{http.MethodDelete, "/v1/sessions/{name}", s.retireSession},
 
 		// The manager's side.
 		{http.MethodGet, "/v1/state", s.state},
@@ -212,6 +280,9 @@ func (s *Server) addEvent(w http.ResponseWriter, r *http.Request) {
 	case req.Audience != "" && !store.ValidAudience(req.Audience):
 		fail(w, http.StatusBadRequest, "audience must be manager or po")
 		return
+	case !validIssue(req.Issue):
+		fail(w, http.StatusBadRequest, issueRule)
+		return
 	case req.Kind == store.KindValidation && req.Link == "":
 		// A validation without a link is a validation nobody can give.
 		fail(w, http.StatusBadRequest, "a validation must carry a link")
@@ -253,7 +324,11 @@ func (s *Server) awaitReply(w http.ResponseWriter, r *http.Request) {
 			failStore(w, err)
 			return
 		}
-		if e.Reply != nil {
+		// Three ways to stop waiting, and a caller has to tell them apart or it
+		// resumes as if it had a verdict: an answer, a withdrawal, and the PO
+		// asking for the question to be put in plain words — which is not an
+		// answer at all, but something to do before one can come.
+		if e.Reply != nil || e.State != store.StateOpen || e.ExplainPending {
 			write(w, http.StatusOK, e)
 			return
 		}
@@ -268,12 +343,18 @@ type sessionRequest struct {
 	Status string `json:"status"`
 	Issue  string `json:"issue"`
 	Detail string `json:"detail"`
+	// WaitingOn and WaitingFor go together: a session paused on another one says
+	// which, and on what. Neither alone is accepted — a pause with nothing to
+	// point at could not lift itself, and would be the freely-declared flag this
+	// design refuses.
+	WaitingOn  string `json:"waiting_on"`
+	WaitingFor string `json:"waiting_for"`
 }
 
 func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if name == "" {
-		fail(w, http.StatusBadRequest, "session name is required")
+	name := r.PathValue("name")
+	if err := validSessionName(name); err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var req sessionRequest
@@ -281,15 +362,58 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !store.ValidStatus(req.Status) {
-		fail(w, http.StatusBadRequest, "status must be active, waiting or idle")
+		fail(w, http.StatusBadRequest, "status must be active or idle")
 		return
 	}
-	sess, err := s.st.SaveSession(name, req.Status, req.Issue, req.Detail)
+	if !validIssue(req.Issue) {
+		fail(w, http.StatusBadRequest, issueRule)
+		return
+	}
+	req.WaitingOn, req.WaitingFor = strings.TrimSpace(req.WaitingOn), strings.TrimSpace(req.WaitingFor)
+	switch {
+	case (req.WaitingOn == "") != (req.WaitingFor == ""):
+		fail(w, http.StatusBadRequest,
+			"waiting_on and waiting_for go together — a pause needs something to point at, or it could never lift")
+		return
+	case req.WaitingOn == name:
+		fail(w, http.StatusBadRequest, "a session cannot be waiting on itself")
+		return
+	case req.WaitingOn != "" && !validIssue(req.WaitingFor):
+		fail(w, http.StatusBadRequest, issueRule)
+		return
+	}
+
+	sess, err := s.st.SaveSessionWaiting(name, req.Status, req.Issue, req.Detail, req.WaitingOn, req.WaitingFor)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	write(w, http.StatusOK, sess)
+}
+
+// retireSession removes a session's row. Its events stay — they are the trace of
+// decisions, not the session's property.
+func (s *Server) retireSession(w http.ResponseWriter, r *http.Request) {
+	// Deliberately not validSessionName: see ServeHTTP. A row that exists can
+	// always be removed, whatever it is called.
+	name := r.PathValue("name")
+	if name == "" {
+		fail(w, http.StatusBadRequest, "a session name is required")
+		return
+	}
+	err := s.st.RetireSession(name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such session")
+		return
+	case errors.Is(err, store.ErrStillWaiting):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- answers ----------------------------------------------------------------
@@ -411,6 +535,119 @@ type UndoResponse struct {
 	CatchUpID int64 `json:"catch_up_id,omitempty"`
 }
 
+// askToExplain records that the PO cannot act on an ask as worded.
+//
+// The ask stays open: it is still waiting for an answer, just not in the terms
+// it was written in. Asking twice is the same as asking once.
+func (s *Server) askToExplain(w http.ResponseWriter, r *http.Request) {
+	id, ok := eventID(w, r)
+	if !ok {
+		return
+	}
+	e, err := s.st.AskToExplain(id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such event")
+		return
+	case errors.Is(err, store.ErrNotAnAsk):
+		fail(w, http.StatusConflict, "an info asks nothing — there is nothing to reword")
+		return
+	case errors.Is(err, store.ErrNotOpen):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, s.withIssueURLs([]store.Event{e})[0])
+}
+
+type explanationRequest struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
+}
+
+// explain publishes the plain-words version of an ask.
+func (s *Server) explain(w http.ResponseWriter, r *http.Request) {
+	id, ok := eventID(w, r)
+	if !ok {
+		return
+	}
+	var req explanationRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Author = strings.TrimSpace(req.Author)
+	switch {
+	case req.Author == "":
+		fail(w, http.StatusBadRequest, "author is required")
+		return
+	case strings.TrimSpace(req.Body) == "":
+		fail(w, http.StatusBadRequest, "an explanation needs a body — that is the whole point of it")
+		return
+	}
+
+	e, err := s.st.Explain(id, req.Author, richtext.Clean(req.Body))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such event")
+		return
+	case errors.Is(err, store.ErrNotAllowed):
+		fail(w, http.StatusForbidden, err.Error())
+		return
+	case errors.Is(err, store.ErrNotOpen):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, s.withIssueURLs([]store.Event{e})[0])
+}
+
+type withdrawRequest struct {
+	Author string `json:"author"`
+}
+
+// withdraw closes an open ask that turned out not to need an answer — the dev
+// found it themselves, or the manager read the issue and saw the decision was
+// already written.
+//
+// It is refused on an answered event: taking an answer back is undo, and the
+// two must not overlap.
+func (s *Server) withdraw(w http.ResponseWriter, r *http.Request) {
+	id, ok := eventID(w, r)
+	if !ok {
+		return
+	}
+	var req withdrawRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Author = strings.TrimSpace(req.Author)
+	if req.Author == "" {
+		fail(w, http.StatusBadRequest, "author is required: someone is accountable for the card disappearing")
+		return
+	}
+
+	e, err := s.st.Withdraw(id, req.Author)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such event")
+		return
+	case errors.Is(err, store.ErrNotOpen):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, store.ErrNotAllowed):
+		fail(w, http.StatusForbidden, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, s.withIssueURLs([]store.Event{e})[0])
+}
+
 type rerouteRequest struct {
 	Audience string `json:"audience"`
 }
@@ -444,12 +681,14 @@ func (s *Server) reroute(w http.ResponseWriter, r *http.Request) {
 
 // StateResponse is everything the manager needs, in one call.
 type StateResponse struct {
-	Sessions []store.Session `json:"sessions"`
-	Waiting  []store.Event   `json:"waiting"` // open, addressed to the manager, needs a decision
-	Infos    []store.Event   `json:"infos"`   // open, addressed to the manager, needs nothing
-	WithPO   []store.Event   `json:"with_po"` // open, sitting with the PO
-	Answers  []store.Event   `json:"answers"` // answered, not read yet — the return trip
-	Pending  int             `json:"pending"` // what a wake signal would count
+	// The same rows the PO's page reads, so the board and the page cannot
+	// disagree about what a session is doing.
+	Sessions []SessionRow  `json:"sessions"`
+	Waiting  []store.Event `json:"waiting"` // open, addressed to the manager, needs a decision
+	Infos    []store.Event `json:"infos"`   // open, addressed to the manager, needs nothing
+	WithPO   []store.Event `json:"with_po"` // open, sitting with the PO
+	Answers  []store.Event `json:"answers"` // answered, not read yet — the return trip
+	Pending  int           `json:"pending"` // what a wake signal would count
 }
 
 // state is the one call that replaces being interrupted: everything, at once.
@@ -481,8 +720,8 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := StateResponse{
-		Sessions: sessions, Waiting: []store.Event{}, Infos: []store.Event{},
-		WithPO:  s.withIssueURLs(withPO),
+		Sessions: s.rows(sessions, mine, withPO), Waiting: []store.Event{}, Infos: []store.Event{},
+		WithPO:  s.withIssueURLs(asks(withPO)),
 		Answers: s.withIssueURLs(answers),
 		Pending: len(items),
 	}
@@ -492,6 +731,14 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 			res.Infos = append(res.Infos, e)
 		} else {
 			res.Waiting = append(res.Waiting, e)
+		}
+	}
+	// An info addressed to the PO is still an info: nobody has to act on it, and
+	// the PO's page does not show them at all. It would be visible nowhere
+	// otherwise, so the board carries every open one whatever it was addressed to.
+	for _, e := range withPO {
+		if e.Kind == store.KindInfo {
+			res.Infos = append(res.Infos, e)
 		}
 	}
 	write(w, http.StatusOK, res)
@@ -589,7 +836,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 type POResponse struct {
 	Sessions []SessionRow  `json:"sessions"`
 	ForYou   []store.Event `json:"for_you"` // everything addressed to the PO, and nothing else
-	Infos    []store.Event `json:"infos"`   // the folded-away zone; never in the flow
 	// Recent is what the PO just answered and can still take back. It is sent
 	// so that a page reload does not lose the chance to undo.
 	Recent []store.Event `json:"recent"`
@@ -597,8 +843,12 @@ type POResponse struct {
 	UndoWindow int `json:"undo_window"`
 }
 
-// po is what the page reads. An `info` never reaches ForYou: a text scrolling
-// while the PO reads is the defect this whole tool exists to remove.
+// po is what the page reads.
+//
+// An `info` reaches none of it. It is published so that nobody has to read it
+// now, and the PO in particular has nothing to do with it — the manager reads
+// them on the board and clears them with ack. Showing them here, even folded
+// away, was a section the PO had to notice in order to ignore.
 func (s *Server) po(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.st.Sessions()
 	if err != nil {
@@ -610,37 +860,33 @@ func (s *Server) po(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	infos, err := s.st.OpenEvents(store.AudienceManager)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
 	recent, err := s.st.AnsweredWithin(store.AudiencePO, s.cfg.UndoWindow)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	open, infos = s.withIssueURLs(open), s.withIssueURLs(infos)
+	// The manager's open events are read but not returned: `blocked` is derived
+	// from them, and a session stopped on a migration must show as stopped on
+	// the PO's table even though the ask itself is the manager's business.
+	mgr, err := s.st.OpenEvents(store.AudienceManager)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	open = s.withIssueURLs(open)
 	res := POResponse{
-		Sessions:   s.rows(sessions, open, infos),
+		Sessions:   s.rows(sessions, open, mgr),
 		ForYou:     []store.Event{},
-		Infos:      []store.Event{},
 		Recent:     s.withIssueURLs(recent),
 		UndoWindow: int(s.cfg.UndoWindow / time.Second),
 	}
 	for _, e := range open {
 		if e.Kind == store.KindInfo {
-			res.Infos = append(res.Infos, e)
 			continue
 		}
 		res.ForYou = append(res.ForYou, e)
-	}
-	for _, e := range infos {
-		if e.Kind == store.KindInfo {
-			res.Infos = append(res.Infos, e)
-		}
 	}
 	write(w, http.StatusOK, res)
 }
@@ -653,6 +899,18 @@ type WakeResponse struct {
 
 // htmlEscape keeps content out of the markup the catch-up builds around it.
 func htmlEscape(s string) string { return html.EscapeString(s) }
+
+// asks drops the infos out of a list: they wait on nobody, so they never belong
+// in a list of what somebody has to answer.
+func asks(events []store.Event) []store.Event {
+	out := make([]store.Event, 0, len(events))
+	for _, e := range events {
+		if e.Kind != store.KindInfo {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 // withIssueURLs fills in the address of each event's issue, so a page can link
 // it without knowing the repository.
@@ -684,14 +942,36 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 		}
 	}
 
+	// What each session is currently declaring, so a pause can be checked
+	// against it rather than against a flag somebody has to remember to clear.
+	declared := make(map[string]store.Session, len(sessions))
+	for _, sess := range sessions {
+		declared[sess.Name] = sess
+	}
+
 	out := make([]SessionRow, 0, len(sessions))
 	for _, sess := range sessions {
 		row := SessionRow{
 			Name: sess.Name, Issue: sess.Issue, Detail: sess.Detail,
 			SinceAt:    sess.SinceAt,
+			UpdatedAt:  sess.UpdatedAt,
+			Quiet:      s.cfg.QuietAfter > 0 && s.st.Now().Sub(sess.UpdatedAt) > s.cfg.QuietAfter,
 			IssueLabel: s.cfg.IssueLabel(sess.Issue),
 			IssueURL:   s.cfg.IssueURL(sess.Issue),
 		}
+		// The pause holds only while the session it names still declares the
+		// issue it was waiting for. When that session moves on — or retires —
+		// it lifts itself, exactly as waiting-on-you lifts when the PO answers.
+		paused := false
+		if sess.WaitingOn != "" {
+			if on, known := declared[sess.WaitingOn]; known && on.Issue == sess.WaitingFor {
+				paused = true
+				row.WaitingOn = sess.WaitingOn
+				row.WaitingForLabel = s.cfg.IssueLabel(sess.WaitingFor)
+				row.WaitingForURL = s.cfg.IssueURL(sess.WaitingFor)
+			}
+		}
+
 		switch {
 		case blocked[sess.Name]:
 			row.State = RowBlocked
@@ -699,6 +979,8 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 			row.State = RowOnYou
 		case sess.Status == store.StatusIdle:
 			row.State = RowIdle
+		case paused:
+			row.State = RowOnPeer
 		default:
 			row.State = RowWorking
 		}

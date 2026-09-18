@@ -92,6 +92,22 @@ like any other signal:
 switchboard unreachable for 2m — nothing is getting through
 ```
 
-Once, not on every attempt; the threshold is `--down-alert`. After a recovery, a
-fresh outage is announced again. Per-attempt errors stay on standard error,
-where they interrupt nobody.
+Once, not on every attempt; the threshold is `--down-alert`, two minutes by
+default. And the return is announced too — a reader told the line is dead needs
+to be told it is alive again, or they go on believing the outage still runs.
+
+**A restart produces nothing at all.** Below the threshold, not a line, not even
+on standard error: a warning that cries at every deploy teaches its reader to
+ignore it, and the day the service really stays down the line reads like all the
+ones before it. A manager's `watch` line becomes a notification in a session, so
+the cost of crying wolf is a session woken for nothing.
+
+While the service is missing, the poll stops blocking. The long wait holds a
+connection for minutes, so a service coming back would not be noticed until it
+expired — and the reader would be left with "unreachable" as the last thing they
+heard.
+
+`await` holds the same way. It used to return the error, which killed the wait: a
+session blocked on its own question lost it because the service was upgraded
+under it, and read that as a failure. It now waits the service out, and only a
+real answer, a withdrawal, a rewording request or its own timeout ends it.

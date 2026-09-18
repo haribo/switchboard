@@ -17,6 +17,7 @@ import (
 
 	"switchboard/internal/api"
 	"switchboard/internal/build"
+	"switchboard/internal/issueref"
 	"switchboard/internal/store"
 	"switchboard/internal/web"
 )
@@ -32,6 +33,9 @@ const usage = `switchboard — coordination for parallel sessions
   ask      put a question to the PO
   ack      mark as read what only had to be read
   undo     take back an answer just given
+  withdraw close an open ask that turned out not to need an answer
+  explain  say the same thing in plain words, when the PO asks for it
+  retire   remove a session's row from the table
   watch    the grouped signal: one line when a batch needs handling
   db       look after the database: status, backup, migrate
   version  what this binary is
@@ -65,6 +69,12 @@ func Run(args []string) int {
 		err = ack(args[1:])
 	case "undo":
 		err = undo(args[1:])
+	case "withdraw":
+		err = withdraw(args[1:])
+	case "explain":
+		err = explain(args[1:])
+	case "retire":
+		err = retire(args[1:])
 	case "watch":
 		err = watch(args[1:])
 	case "db":
@@ -80,10 +90,57 @@ func Run(args []string) int {
 		return 2
 	}
 	if err != nil {
+		var x explainWantedError
+		if errors.As(err, &x) {
+			// Not a failure either: the PO cannot act on the wording. Say the
+			// same thing differently, then wait again.
+			fmt.Println(x.Error())
+			return ExitExplainWanted
+		}
+		var w withdrawnError
+		if errors.As(err, &w) {
+			// Not a failure: the ask was closed without an answer. A distinct
+			// code lets a caller branch without parsing the message.
+			fmt.Println(w.Error())
+			return ExitWithdrawn
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
 	return 0
+}
+
+// ExitWithdrawn is the exit code of `await` when the ask was withdrawn instead
+// of answered. A session that blocked on its own question has to tell the two
+// apart, or it resumes as if it had a verdict.
+const ExitWithdrawn = 3
+
+// withdrawnError reports an ask that was closed without an answer.
+type withdrawnError struct {
+	id    int64
+	title string
+	by    string
+}
+
+// ExitExplainWanted is the exit code of `await` when the PO asked for the
+// question to be put in plain words. It is not an answer and not a refusal:
+// reword it with `switchboard explain`, then wait again.
+const ExitExplainWanted = 4
+
+// explainWantedError reports that the wording, not the question, is the obstacle.
+type explainWantedError struct {
+	id    int64
+	title string
+}
+
+func (e explainWantedError) Error() string {
+	return fmt.Sprintf("explain: the PO cannot act on %q as worded (event %d) — "+
+		"say the same thing in plain words with `switchboard explain %d --as <you> --body \"…\"`, then await again",
+		e.title, e.id, e.id)
+}
+
+func (e withdrawnError) Error() string {
+	return fmt.Sprintf("withdrawn: %q (event %d, by %s) — no answer is coming, carry on", e.title, e.id, e.by)
 }
 
 // repeated collects a flag given more than once (--option A --option B).
@@ -153,9 +210,6 @@ func serve(args []string) error {
 	addr := fs.String("addr", env("ADDR", "127.0.0.1:8787"), "listen address")
 	db := fs.String("db", env("DB", store.DefaultPath()), "SQLite file")
 	cfg := api.DefaultConfig
-	fs.StringVar(&cfg.RepoURL, "repo", env("REPO", cfg.RepoURL),
-		"repository that bare issue numbers belong to, e.g. https://github.com/acme/app — "+
-			"not needed when sessions send full issue URLs")
 	fs.DurationVar(&cfg.Wake.Debounce, "debounce", envDuration("DEBOUNCE", cfg.Wake.Debounce),
 		"how long a batch gathers before a signal")
 	fs.DurationVar(&cfg.Wake.MinInterval, "min-interval", envDuration("MIN_INTERVAL", cfg.Wake.MinInterval),
@@ -164,6 +218,8 @@ func serve(args []string) error {
 		"batching delay when a dev is blocked")
 	fs.DurationVar(&cfg.UndoWindow, "undo-window", envDuration("UNDO_WINDOW", cfg.UndoWindow),
 		"how long an answer can be taken back")
+	fs.DurationVar(&cfg.QuietAfter, "quiet-after", envDuration("QUIET_AFTER", cfg.QuietAfter),
+		"how long a session may say nothing before the table marks it")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
@@ -176,16 +232,31 @@ func serve(args []string) error {
 
 	srv := &http.Server{Addr: *addr, Handler: api.New(st, cfg, web.Page())}
 	fmt.Println(build.Line())
+	// Say what is in the environment but not read. The config file is never
+	// overwritten by an upgrade, so a dropped setting survives in it silently.
+	reportStraySettings(os.Environ(), os.Stdout)
 	fmt.Printf("listening on http://%s — database %s (schema %d)\n", *addr, *db, store.SchemaTarget())
-	fmt.Printf("batching %s, floor %s, blocked %s, undo %s\n",
-		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow)
-	if cfg.RepoURL == "" {
-		fmt.Println("no --repo set: bare issue numbers show as plain text; full issue URLs still link")
-	}
+	fmt.Printf("batching %s, floor %s, blocked %s, undo %s, quiet after %s\n",
+		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow, cfg.QuietAfter)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// issueRule is what --issue has to be. The service enforces it too — this is
+// here so the message names the flag the caller actually typed.
+const issueRule = "--issue takes the issue's full URL — a bare number has no repository"
+
+// checkIssue refuses anything but a full URL. The service holds no repository to
+// resolve a bare number against, and will not be given one: a number resolved
+// against a repository the session was not working in links to somebody else's
+// issue.
+func checkIssue(issue string) error {
+	if issue == "" || issueref.IsURL(issue) {
+		return nil
+	}
+	return errors.New(issueRule)
 }
 
 // --- a dev's commands -------------------------------------------------------
@@ -193,8 +264,10 @@ func serve(args []string) error {
 func state(args []string) error {
 	fs, server := flags("state")
 	session := fs.String("session", "", "session name (required)")
-	status := fs.String("status", store.StatusActive, "active, waiting or idle")
-	issue := fs.String("issue", "", "the issue being worked on: a number, or its full URL")
+	status := fs.String("status", store.StatusActive, "active or idle")
+	waitingOn := fs.String("waiting-on", "", "the session whose work this one is paused on")
+	waitingFor := fs.String("waiting-for", "", "the issue it is paused on, as its full URL")
+	issue := fs.String("issue", "", "the issue being worked on, as its full URL")
 	detail := fs.String("detail", "", "one short line: what is happening")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
@@ -202,12 +275,46 @@ func state(args []string) error {
 	if *session == "" {
 		return errors.New("--session is required")
 	}
-	var out store.Session
-	if _, err := newClient(*server).call(http.MethodPut, "/v1/sessions/"+*session,
-		map[string]string{"status": *status, "issue": *issue, "detail": *detail}, &out); err != nil {
+	if err := checkIssue(*issue); err != nil {
 		return err
 	}
-	fmt.Printf("%s: %s%s\n", out.Name, out.Status, issueSuffix(out.Issue))
+	if err := checkIssue(*waitingFor); err != nil {
+		return err
+	}
+	var out store.Session
+	if _, err := newClient(*server).call(http.MethodPut, "/v1/sessions/"+*session,
+		map[string]string{
+			"status": *status, "issue": *issue, "detail": *detail,
+			"waiting_on": *waitingOn, "waiting_for": *waitingFor,
+		}, &out); err != nil {
+		return err
+	}
+	// Say the pause back, so the caller sees what was recorded rather than what
+	// it meant — the defect this replaced was a status echoed but not applied.
+	pause := ""
+	if out.WaitingOn != "" {
+		pause = fmt.Sprintf(", paused on %s %s", out.WaitingOn, issueref.Label(out.WaitingFor))
+	}
+	fmt.Printf("%s: %s%s%s\n", out.Name, out.Status, issueSuffix(out.Issue), pause)
+	return nil
+}
+
+// retire removes a session's row. Its events stay.
+func retire(args []string) error {
+	fs, server := flags("retire")
+	session := fs.String("session", "", "session to retire (required)")
+	rest := parse(fs, args)
+	name := *session
+	if name == "" && len(rest) == 1 {
+		name = rest[0] // switchboard retire acme-dev3
+	}
+	if name == "" {
+		return errors.New("--session is required")
+	}
+	if _, err := newClient(*server).call(http.MethodDelete, "/v1/sessions/"+name, nil, nil); err != nil {
+		return err
+	}
+	fmt.Printf("%s retired — its events are kept\n", name)
 	return nil
 }
 
@@ -219,7 +326,7 @@ func event(args []string) error {
 	title := fs.String("title", "", "one short line, what this is about (required)")
 	body := fs.String("body", "", "the detail; links, bold, code and lists are kept, the rest shows as text")
 	link := fs.String("link", "", "address to open (required for a validation)")
-	issue := fs.String("issue", "", "the issue this is about: a number, or its full URL")
+	issue := fs.String("issue", "", "the issue this is about, as its full URL")
 	audience := fs.String("to", "", "manager or po (default: po for a validation, manager otherwise)")
 	wait := fs.Duration("wait", 0, "wait for the answer before returning")
 	var options repeated
@@ -229,6 +336,9 @@ func event(args []string) error {
 	}
 	if *from == "" || *kind == "" || *title == "" {
 		return errors.New("--from, --kind and --title are required")
+	}
+	if err := checkIssue(*issue); err != nil {
+		return err
 	}
 
 	c := newClient(*server)
@@ -243,23 +353,25 @@ func event(args []string) error {
 	if *wait <= 0 {
 		return nil
 	}
-	return waitReply(c, e.ID, *wait)
+	return waitReply(c, e.ID, *wait, 2*time.Minute)
 }
 
 func await(args []string) error {
 	fs, server := flags("await")
 	timeout := fs.Duration("timeout", time.Hour, "give up after this long")
+	downAfter := fs.Duration("down-alert", 2*time.Minute, "report an unreachable service after this long")
 	id, err := oneID(parse(fs, args))
 	if err != nil {
 		return err
 	}
-	return waitReply(newClient(*server), id, *timeout)
+	return waitReply(newClient(*server), id, *timeout, *downAfter)
 }
 
 // waitReply blocks on the server until the event is answered, re-issuing the
 // long-poll as it expires. A dev calls this and picks its work back up alone.
-func waitReply(c *client, id int64, timeout time.Duration) error {
+func waitReply(c *client, id int64, timeout, downAfter time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var down outage
 	for {
 		left := time.Until(deadline)
 		if left <= 0 {
@@ -271,8 +383,24 @@ func waitReply(c *client, id int64, timeout time.Duration) error {
 		var e store.Event
 		got, err := c.call(http.MethodGet,
 			fmt.Sprintf("/v1/events/%d/reply?wait=%d", id, secs(left)), nil, &e)
+
+		var gone Unreachable
+		if errors.As(err, &gone) {
+			// A deploy restarts the service under a waiting session. Dying here
+			// would lose the wait and read as a failure, when nothing failed;
+			// the session would go back to work without its answer. So it waits
+			// the service out, saying nothing unless the loss lasts.
+			if line := down.failed(time.Now(), downAfter); line != "" {
+				fmt.Fprintln(os.Stderr, line)
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if err != nil {
 			return err
+		}
+		if line := down.recovered(time.Now()); line != "" {
+			fmt.Fprintln(os.Stderr, line)
 		}
 		if got && e.Reply != nil {
 			// Say it has been read: an undo must know it is too late to be
@@ -280,6 +408,12 @@ func waitReply(c *client, id int64, timeout time.Duration) error {
 			c.call(http.MethodPost, fmt.Sprintf("/v1/events/%d/seen", id), nil, nil)
 			fmt.Println(answerLine(e))
 			return nil
+		}
+		if got && e.State == store.StateWithdrawn {
+			return withdrawnError{id: e.ID, title: e.Title, by: e.ClosedBy}
+		}
+		if got && e.ExplainPending {
+			return explainWantedError{id: e.ID, title: e.Title}
 		}
 	}
 }
@@ -309,24 +443,35 @@ func board(args []string) error {
 	return nil
 }
 
+// quietNote is what a row says when nothing has arrived from it for a while.
+//
+// It names what was observed — silence — and not what might be behind it. The
+// session may be on one long task or gone; the service cannot tell, and must not
+// display a distinction it has no means of observing.
+func quietNote(quiet bool, updated time.Time) string {
+	if !quiet {
+		return ""
+	}
+	return "  quiet " + age(updated)
+}
+
 func printBoard(w io.Writer, st api.StateResponse) {
 	fmt.Fprintln(w, "SESSIONS")
 	if len(st.Sessions) == 0 {
 		fmt.Fprintln(w, "  (none)")
 	}
-	waiting := map[string]bool{}
-	for _, e := range st.WithPO {
-		waiting[e.Author] = true
-	}
-	sorted := append([]store.Session(nil), st.Sessions...)
+	sorted := append([]api.SessionRow(nil), st.Sessions...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, s := range sorted {
-		flag := ""
-		if waiting[s.Name] {
-			flag = "  (with the PO)"
+		// The state is the derived one the page shows, so the board and the
+		// page cannot disagree — it already says when a session waits on the PO.
+		state := s.State
+		if s.WaitingOn != "" {
+			state += " " + s.WaitingOn
 		}
-		fmt.Fprintf(w, "  %-14s %-8s %-8s %s%s\n",
-			s.Name, s.Status, orDash(issueTag(s.Issue)), age(s.SinceAt), flag)
+		line := fmt.Sprintf("  %-14s %-24s %-8s %s",
+			s.Name, state, orDash(s.IssueLabel), age(s.SinceAt))
+		fmt.Fprintln(w, strings.TrimRight(line+quietNote(s.Quiet, s.UpdatedAt), " "))
 	}
 
 	section(w, "NEEDS YOU", st.Waiting, func(e store.Event) {
@@ -384,7 +529,7 @@ func ask(args []string) error {
 	title := fs.String("title", "", "the question, one line (required)")
 	body := fs.String("body", "", "the detail; links, bold, code and lists are kept")
 	link := fs.String("link", "", "address to open — makes it a validation")
-	issue := fs.String("issue", "", "the issue this is about: a number, or its full URL")
+	issue := fs.String("issue", "", "the issue this is about, as its full URL")
 	from := fs.String("from", store.AudienceManager, "who is asking")
 	forward := fs.Int64("forward", 0, "hand this event id to the PO instead of raising a new one")
 	var options repeated
@@ -405,6 +550,9 @@ func ask(args []string) error {
 	}
 	if *title == "" {
 		return errors.New("--title is required")
+	}
+	if err := checkIssue(*issue); err != nil {
+		return err
 	}
 	kind := store.KindQuestion
 	if *link != "" {
@@ -456,6 +604,48 @@ func undo(args []string) error {
 	return nil
 }
 
+// withdraw closes an open ask that no longer needs an answer.
+func withdraw(args []string) error {
+	fs, server := flags("withdraw")
+	as := fs.String("as", "", "who is withdrawing it: the event's author, or manager (required)")
+	id, err := oneID(parse(fs, args))
+	if err != nil {
+		return err
+	}
+	if *as == "" {
+		return errors.New("--as is required: someone is accountable for the card disappearing")
+	}
+	var e store.Event
+	if _, err := newClient(*server).call(http.MethodPost,
+		fmt.Sprintf("/v1/events/%d/withdraw", id), map[string]string{"author": *as}, &e); err != nil {
+		return err
+	}
+	fmt.Printf("event %d withdrawn by %s\n", e.ID, e.ClosedBy)
+	return nil
+}
+
+// explain publishes the plain-words version of an ask the PO could not act on.
+func explain(args []string) error {
+	fs, server := flags("explain")
+	as := fs.String("as", "", "the ask's author, or manager (required)")
+	body := fs.String("body", "", "the same thing said differently (required)")
+	id, err := oneID(parse(fs, args))
+	if err != nil {
+		return err
+	}
+	if *as == "" || *body == "" {
+		return errors.New("--as and --body are required")
+	}
+	var e store.Event
+	if _, err := newClient(*server).call(http.MethodPost,
+		fmt.Sprintf("/v1/events/%d/explanation", id),
+		map[string]string{"author": *as, "body": *body}, &e); err != nil {
+		return err
+	}
+	fmt.Printf("event %d explained — the original wording is kept\n", e.ID)
+	return nil
+}
+
 // --- the grouped signal -----------------------------------------------------
 
 func watch(args []string) error {
@@ -469,25 +659,37 @@ func watch(args []string) error {
 	}
 
 	c := newClient(*server)
-	path := fmt.Sprintf("/v1/wake?audience=%s&wait=%d", *party, secs(*poll))
+	long := fmt.Sprintf("/v1/wake?audience=%s&wait=%d", *party, secs(*poll))
+	// While the service is missing, ask without blocking. The long poll holds
+	// the connection for minutes, so coming back would not be noticed until it
+	// expired — and the reader would be left believing the outage still runs.
+	short := fmt.Sprintf("/v1/wake?audience=%s&wait=0", *party)
 	var down outage
 	for {
+		path := long
+		if down.ongoing() {
+			path = short
+		}
 		var batch api.WakeResponse
 		got, err := c.call(http.MethodGet, path, nil, &batch)
 		if err != nil {
 			// The watch must outlive a restart of the service: a subscription
-			// that dies stops waking anybody, silently.
-			fmt.Fprintln(os.Stderr, "switchboard:", err)
-			if line := down.report(time.Now(), *downAfter); line != "" {
-				// Standard output, deliberately: a service that is down must
-				// reach the manager, not sit in a log nobody reads. Silence
-				// and "nothing to do" must never look alike.
+			// that dies stops waking anybody, silently. Nothing is printed
+			// while the delay runs — not even on standard error, which a
+			// per-attempt line would fill with one entry per deploy.
+			//
+			// Past the delay it goes to standard output, deliberately: a
+			// service that is down must reach the manager, not sit in a log
+			// nobody reads. Silence and "nothing to do" must never look alike.
+			if line := down.failed(time.Now(), *downAfter); line != "" {
 				fmt.Println(line)
 			}
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		down.clear()
+		if line := down.recovered(time.Now()); line != "" {
+			fmt.Println(line)
+		}
 		if !got {
 			continue // nothing ripe; the long-poll simply expired
 		}
@@ -499,27 +701,48 @@ func watch(args []string) error {
 	}
 }
 
-// outage tracks a service that stopped answering, so the watch says so once —
-// and only once — rather than every five seconds or never.
+// outage decides what a caller says about a service that stopped answering.
+//
+// The rule is one line, once, and only for a loss that lasts: a restart is not
+// an outage, and a warning that cries at every deploy teaches its reader to
+// ignore it — so the day the service really stays down, the line reads like all
+// the ones before it. Nothing at all is printed while the delay runs.
 type outage struct {
-	since   time.Time
-	alerted bool
+	since    time.Time
+	alerted  bool
+	recovery bool // an announced outage owes a recovery line
 }
 
-// report returns the line to print, or "" when there is nothing new to say.
-func (o *outage) report(now time.Time, after time.Duration) string {
+// failed is called on every failed attempt. It returns the line to print, or ""
+// — which is the usual case, including for a whole restart.
+func (o *outage) failed(now time.Time, after time.Duration) string {
 	if o.since.IsZero() {
 		o.since = now
 	}
 	if o.alerted || now.Sub(o.since) < after {
 		return ""
 	}
-	o.alerted = true
-	return fmt.Sprintf("switchboard unreachable for %s — nothing is getting through", roundDuration(now.Sub(o.since)))
+	o.alerted, o.recovery = true, true
+	return fmt.Sprintf("switchboard unreachable for %s — nothing is getting through",
+		roundDuration(now.Sub(o.since)))
 }
 
-// clear forgets an outage that is over, so the next one is announced again.
-func (o *outage) clear() { *o = outage{} }
+// ongoing reports whether the service is currently missing, announced or not.
+func (o *outage) ongoing() bool { return !o.since.IsZero() }
+
+// recovered is called on every success. It returns a line only when an outage
+// was announced: a reader told the line was dead needs to be told it is alive
+// again, and a reader told nothing needs nothing.
+func (o *outage) recovered(now time.Time) string {
+	owed := o.recovery
+	down := o.since
+	*o = outage{}
+	if !owed {
+		return ""
+	}
+	return fmt.Sprintf("switchboard is answering again — it was unreachable for %s",
+		roundDuration(now.Sub(down)))
+}
 
 func roundDuration(d time.Duration) time.Duration {
 	if d < time.Minute {
@@ -558,15 +781,10 @@ func issueSuffix(issue string) string {
 	if issue == "" {
 		return ""
 	}
-	return " #" + issue
+	return " " + issueref.Label(issue)
 }
 
-func issueTag(issue string) string {
-	if issue == "" {
-		return ""
-	}
-	return "#" + issue
-}
+func issueTag(issue string) string { return issueref.Label(issue) }
 
 func linkSuffix(l string) string {
 	if l == "" {

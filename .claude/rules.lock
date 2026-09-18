@@ -30,6 +30,10 @@ hash = "6d93ba90db46"
 adopted = "2026-09-17"
 hash = "89a4715cca28"
 
+[rules.git-docs-pointer]
+adopted = "2026-09-18"
+hash = "f38651e37e09"
+
 [rules.issue-handling]
 adopted = "2026-09-17"
 hash = "bd91539c493b"

@@ -75,6 +75,39 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		version: 2,
+		name:    "record who withdrew an event",
+		stmts: []string{
+			// Who closed an event without answering it. Someone has to be
+			// accountable for a card vanishing from under the reader.
+			`ALTER TABLE events ADD COLUMN closed_by TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 3,
+		name:    "carry a request to put an ask in plain words",
+		stmts: []string{
+			// Set when the PO asks for the ask to be reworded, cleared when the
+			// plain-words version arrives. The event stays open throughout: it
+			// is still waiting for an answer, just not in those terms.
+			`ALTER TABLE events ADD COLUMN explain_pending INTEGER NOT NULL DEFAULT 0`,
+			// The plain-words version, sanitized like any other body. Kept
+			// alongside the original, never replacing it.
+			`ALTER TABLE events ADD COLUMN explanation TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 4,
+		name:    "let a session name what it is waiting on",
+		stmts: []string{
+			// The session whose work this one is paused on, and the issue it is
+			// paused on. Both or neither: waiting on somebody with nothing to
+			// point at is the freely-declared flag this design refuses.
+			`ALTER TABLE sessions ADD COLUMN waiting_on TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN waiting_for TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // SchemaTarget is the schema version this binary expects.
