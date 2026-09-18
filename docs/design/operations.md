@@ -18,16 +18,11 @@ just install
 ```
 
 Builds, installs, writes an example config **only if none exists**, enables and
-starts the service, then prints `db status`. Nothing else is required: sessions
-that send a full issue address get links without any configuration.
-
-`SWITCHBOARD_REPO` is a convenience for the case where every session works in one
-repository — it lets them send bare issue numbers:
+starts the service, then prints `db status`. Nothing else is required: the
+service is told nothing about any repository, and sessions send the full URL of
+the issue they are working on.
 
 ```bash
-$EDITOR ~/.config/switchboard/switchboard.env
-systemctl --user restart switchboard
-```
 
 The service runs under `default.target` with no linger: it starts when your
 session does and stops when the session ends. **A dev session that publishes

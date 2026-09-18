@@ -27,11 +27,12 @@ The first two are **worked out by the service**, not declared. A session already
 says what it published; asking it to also keep a status in sync would add a field
 that can go stale. Derivation cannot go stale.
 
-**Issues link when the address can be resolved.** A session that sends the full
-address of its issue gets a link with no configuration at all — it knows the
-repository it works in, the service does not, and does not guess. A bare number
-resolves only against a configured `--repo`, and shows as plain text otherwise:
-a link that leads nowhere is worse than no link.
+**Issues link because the session sends the whole address.** It knows the
+repository it works in; the service does not, holds none, and will not be given
+one — naming another repository is what this repository must not do, and a bare
+number resolved against a configured repository links to somebody else's issue.
+A bare number is refused on the way in. Rows written before that rule keep
+theirs, and show as plain text: a link that leads nowhere is worse than no link.
 
 **"What's happening" stays on one line**, clipped with an ellipsis, with the full
 text in the title attribute. Every row keeps the same height, so the table stays

@@ -65,7 +65,7 @@ install: build
     @mkdir -p {{confdir}}
     @if [ ! -f {{conffile}} ]; then \
         install -m644 packaging/switchboard.env.example {{conffile}}; \
-        echo "wrote {{conffile}} — set SWITCHBOARD_REPO in it"; \
+        echo "wrote {{conffile}}"; \
     else \
         echo "kept {{conffile}} as it is"; \
     fi

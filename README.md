@@ -26,26 +26,18 @@ an example config at `~/.config/switchboard/switchboard.env`. No root, nothing i
 `~/.local/share/switchboard/switchboard.db`. No authentication: it runs on the
 machine, for the sessions on it.
 
-**Issues become links on their own** when a session sends the address it already
-knows:
+**Issues are given as their full URL:**
 
 ```bash
 switchboard state --session acme-dev3 --status active \
     --issue https://github.com/acme/app/issues/142
 ```
 
-The page shows `#142` and links it. Nothing to configure — the session knows the
-repository it is working in, the service does not, and does not guess.
-
-If every session works in one repository, set it once and bare numbers resolve
-against it:
-
-```
-SWITCHBOARD_REPO=https://github.com/acme/app
-```
-
-Without that, a bare `--issue 142` shows as plain text: a link that leads nowhere
-is worse than no link.
+The page shows `#142` and links it. A bare number is refused — the service holds
+no repository to resolve it against, and will not be given one: a number resolved
+against a repository the session was not working in links to somebody else's
+issue, which is worse than no link. A session knows its own repository, so
+sending the whole address costs it nothing.
 
 The service follows your login session — it starts with it and stops with it. A
 dev session publishing while you are logged out gets a clear

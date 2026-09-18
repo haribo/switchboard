@@ -606,11 +606,18 @@ components:
     Issue:
       type: string
       description: |
-        The issue this is about: a bare number, or its full address. A session
-        knows the repository it works in; the service does not, and does not
-        guess. So a full address always links, and a bare number only links when
-        the service was started with `--repo`.
-      examples: ["142", "https://github.com/acme/app/issues/142"]
+        The issue this is about, as its **full URL**. A bare number is refused:
+        the service holds no repository to resolve it against, and will not be
+        given one — a number resolved against a repository the session was not
+        working in links to somebody else's issue, which is worse than no link.
+
+        A session knows the repository it works in; sending the whole address
+        costs it nothing and removes every guess from the service.
+
+        Rows written before this rule may hold a bare number. They still render,
+        as plain text.
+      pattern: "^https?://"
+      examples: ["https://github.com/acme/app/issues/142"]
 
     SessionRequest:
       type: object

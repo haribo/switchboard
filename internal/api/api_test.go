@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -86,10 +87,10 @@ func TestQuestionTravelsFromDevToPOAndBack(t *testing.T) {
 	h := newHarness(t)
 
 	h.mustDo("PUT", "/v1/sessions/acme-dev3",
-		map[string]string{"status": "active", "issue": "142"}, http.StatusOK)
+		map[string]string{"status": "active", "issue": issueURL(142)}, http.StatusOK)
 
 	created := h.mustDo("POST", "/v1/events", map[string]any{
-		"author": "acme-dev3", "kind": "question", "issue": "142",
+		"author": "acme-dev3", "kind": "question", "issue": issueURL(142),
 		"title": "Tab or modal?", "options": []string{"tab", "modal"},
 	}, http.StatusCreated)
 	id := int64(created["id"].(float64))
@@ -336,7 +337,7 @@ func TestTakingBackTooLateIsRefused(t *testing.T) {
 func TestUndoingAnAnswerTheDevReadRaisesItToTheManager(t *testing.T) {
 	h := newHarness(t)
 	created := h.mustDo("POST", "/v1/events", map[string]string{
-		"author": "acme-dev3", "kind": "question", "audience": "po", "issue": "142",
+		"author": "acme-dev3", "kind": "question", "audience": "po", "issue": issueURL(142),
 		"title": "Tab or modal?",
 	}, http.StatusCreated)
 	id := int64(created["id"].(float64))
@@ -366,8 +367,8 @@ func TestUndoingAnAnswerTheDevReadRaisesItToTheManager(t *testing.T) {
 	if !strings.Contains(catchUp["title"].(string), "acme-dev3") {
 		t.Fatalf("the catch-up does not name the dev to reach: %q", catchUp["title"])
 	}
-	if catchUp["issue"] != "142" {
-		t.Fatalf("ticket = %v, want the one at stake", catchUp["issue"])
+	if catchUp["issue"] != issueURL(142) {
+		t.Fatalf("issue = %v, want the one at stake", catchUp["issue"])
 	}
 
 	// The catch-up is a real item on the manager's plate, so it wakes them.
@@ -399,7 +400,7 @@ func TestTheTableWorksOutBlockedAndWaitingOnYou(t *testing.T) {
 	h := newHarness(t)
 	for _, name := range []string{"acme-dev1", "acme-dev2", "acme-dev3", "acme-dev4"} {
 		h.mustDo("PUT", "/v1/sessions/"+name,
-			map[string]string{"status": "active", "issue": "14" + name[len(name)-1:]}, http.StatusOK)
+			map[string]string{"status": "active", "issue": issueURL(14) + name[len(name)-1:]}, http.StatusOK)
 	}
 	h.mustDo("PUT", "/v1/sessions/acme-dev4", map[string]string{"status": "idle"}, http.StatusOK)
 
@@ -463,35 +464,60 @@ func TestAnIssueSentAsAURLNeedsNoConfiguration(t *testing.T) {
 	}
 }
 
-func TestABareNumberLinksOnlyWhenARepositoryIsSet(t *testing.T) {
+// The service holds no repository to resolve a bare number against, and will
+// not be given one: a number resolved against a repository the session was not
+// working in links to somebody else's issue. Issue #14.
+func TestABareIssueNumberIsRefused(t *testing.T) {
 	h := newHarness(t)
-	h.mustDo("PUT", "/v1/sessions/acme-dev1",
-		map[string]string{"status": "active", "issue": "142"}, http.StatusOK)
 
-	// Nothing says which repository "142" belongs to.
-	row := first(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])
-	if _, has := row["issue_url"]; has {
-		t.Fatal("a bare number was linked with no repository configured")
+	for _, path := range []string{"/v1/sessions/acme-dev1"} {
+		res, out := h.do("PUT", path, map[string]string{"status": "active", "issue": "142"})
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PUT %s with a bare number = %d, want 400", path, res.StatusCode)
+		}
+		if msg, _ := out["error"].(string); !strings.Contains(msg, "full URL") {
+			t.Fatalf("message %q does not name the rule", msg)
+		}
 	}
-	if row["issue_label"] != "#142" {
-		t.Fatalf("issue_label = %v, want #142 shown as plain text", row["issue_label"])
+	res, out := h.do("POST", "/v1/events", map[string]string{
+		"author": "acme-dev1", "kind": "question", "title": "Which label?", "issue": "142",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /v1/events with a bare number = %d, want 400", res.StatusCode)
 	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "full URL") {
+		t.Fatalf("message %q does not name the rule", msg)
+	}
+
+	// No issue at all stays fine: not every ask is about one.
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{"status": "active"}, http.StatusOK)
 
 	cfg := DefaultConfig
-	cfg.RepoURL = "https://github.com/acme/app/"
-	if got, want := cfg.IssueURL("142"), "https://github.com/acme/app/issues/142"; got != want {
+	if got := cfg.IssueURL("142"); got != "" {
+		t.Fatalf("a bare number resolved to %q; nothing can resolve it", got)
+	}
+	if got, want := cfg.IssueURL("https://github.com/acme/app/issues/142"), "https://github.com/acme/app/issues/142"; got != want {
 		t.Fatalf("issue url = %q, want %q", got, want)
 	}
-	if got, want := cfg.IssueURL("#142"), "https://github.com/acme/app/issues/142"; got != want {
-		t.Fatalf("a hash-prefixed number gave %q, want %q", got, want)
+}
+
+// A row written before the rule keeps its bare number and still renders — as
+// plain text, since nothing can turn it into an address. Issue #14.
+func TestARowWrittenBeforeTheRuleStillRenders(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.st.SaveSession("acme-dev1", "active", "142", "CSV export"); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	// A full URL wins over the configured repository: sessions may span repos.
-	other := "https://github.com/acme/other/issues/7"
-	if got := cfg.IssueURL(other); got != other {
-		t.Fatalf("issue url = %q, want the address as sent", got)
+
+	row := first(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])
+	if row["issue"] != "142" {
+		t.Fatalf("issue = %v, want it kept as written", row["issue"])
 	}
-	if cfg.IssueURL("") != "" || cfg.IssueLabel("") != "" {
-		t.Fatal("a session with no issue got a link or a label")
+	if row["issue_label"] != "#142" {
+		t.Fatalf("issue_label = %v, want it still shown", row["issue_label"])
+	}
+	if _, linked := row["issue_url"]; linked {
+		t.Fatal("a bare number was turned into a link")
 	}
 }
 
@@ -654,7 +680,7 @@ func TestTheManagerCanWithdrawAnybodysAsk(t *testing.T) {
 func TestARetiredSessionLeavesThePageButItsEventsRemain(t *testing.T) {
 	h := newHarness(t)
 	h.mustDo("PUT", "/v1/sessions/acme-dev3",
-		map[string]string{"status": "active", "issue": "150"}, http.StatusOK)
+		map[string]string{"status": "active", "issue": issueURL(150)}, http.StatusOK)
 	created := h.mustDo("POST", "/v1/events", map[string]string{
 		"author": "acme-dev3", "kind": "info", "title": "e2e gate finished",
 	}, http.StatusCreated)
@@ -775,4 +801,10 @@ func TestASessionWhoseNameIsNowInvalidCanStillBeRetired(t *testing.T) {
 	}
 	// Creating it again is still refused: the rule applies to new names.
 	h.mustDo("PUT", "/v1/sessions/mon nom", map[string]string{"status": "active"}, http.StatusBadRequest)
+}
+
+// issueURL is what a session sends: the whole address of the issue it is
+// working on, since the service holds no repository to resolve a number.
+func issueURL(n int) string {
+	return fmt.Sprintf("https://github.com/acme/app/issues/%d", n)
 }

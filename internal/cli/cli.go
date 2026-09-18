@@ -182,9 +182,6 @@ func serve(args []string) error {
 	addr := fs.String("addr", env("ADDR", "127.0.0.1:8787"), "listen address")
 	db := fs.String("db", env("DB", store.DefaultPath()), "SQLite file")
 	cfg := api.DefaultConfig
-	fs.StringVar(&cfg.RepoURL, "repo", env("REPO", cfg.RepoURL),
-		"repository that bare issue numbers belong to, e.g. https://github.com/acme/app — "+
-			"not needed when sessions send full issue URLs")
 	fs.DurationVar(&cfg.Wake.Debounce, "debounce", envDuration("DEBOUNCE", cfg.Wake.Debounce),
 		"how long a batch gathers before a signal")
 	fs.DurationVar(&cfg.Wake.MinInterval, "min-interval", envDuration("MIN_INTERVAL", cfg.Wake.MinInterval),
@@ -208,13 +205,25 @@ func serve(args []string) error {
 	fmt.Printf("listening on http://%s — database %s (schema %d)\n", *addr, *db, store.SchemaTarget())
 	fmt.Printf("batching %s, floor %s, blocked %s, undo %s\n",
 		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow)
-	if cfg.RepoURL == "" {
-		fmt.Println("no --repo set: bare issue numbers show as plain text; full issue URLs still link")
-	}
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// issueRule is what --issue has to be. The service enforces it too — this is
+// here so the message names the flag the caller actually typed.
+const issueRule = "--issue takes the issue's full URL — a bare number has no repository"
+
+// checkIssue refuses anything but a full URL. The service holds no repository to
+// resolve a bare number against, and will not be given one: a number resolved
+// against a repository the session was not working in links to somebody else's
+// issue.
+func checkIssue(issue string) error {
+	if issue == "" || strings.HasPrefix(issue, "http://") || strings.HasPrefix(issue, "https://") {
+		return nil
+	}
+	return errors.New(issueRule)
 }
 
 // --- a dev's commands -------------------------------------------------------
@@ -223,13 +232,16 @@ func state(args []string) error {
 	fs, server := flags("state")
 	session := fs.String("session", "", "session name (required)")
 	status := fs.String("status", store.StatusActive, "active, waiting or idle")
-	issue := fs.String("issue", "", "the issue being worked on: a number, or its full URL")
+	issue := fs.String("issue", "", "the issue being worked on, as its full URL")
 	detail := fs.String("detail", "", "one short line: what is happening")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	if *session == "" {
 		return errors.New("--session is required")
+	}
+	if err := checkIssue(*issue); err != nil {
+		return err
 	}
 	var out store.Session
 	if _, err := newClient(*server).call(http.MethodPut, "/v1/sessions/"+*session,
@@ -267,7 +279,7 @@ func event(args []string) error {
 	title := fs.String("title", "", "one short line, what this is about (required)")
 	body := fs.String("body", "", "the detail; links, bold, code and lists are kept, the rest shows as text")
 	link := fs.String("link", "", "address to open (required for a validation)")
-	issue := fs.String("issue", "", "the issue this is about: a number, or its full URL")
+	issue := fs.String("issue", "", "the issue this is about, as its full URL")
 	audience := fs.String("to", "", "manager or po (default: po for a validation, manager otherwise)")
 	wait := fs.Duration("wait", 0, "wait for the answer before returning")
 	var options repeated
@@ -277,6 +289,9 @@ func event(args []string) error {
 	}
 	if *from == "" || *kind == "" || *title == "" {
 		return errors.New("--from, --kind and --title are required")
+	}
+	if err := checkIssue(*issue); err != nil {
+		return err
 	}
 
 	c := newClient(*server)
@@ -435,7 +450,7 @@ func ask(args []string) error {
 	title := fs.String("title", "", "the question, one line (required)")
 	body := fs.String("body", "", "the detail; links, bold, code and lists are kept")
 	link := fs.String("link", "", "address to open — makes it a validation")
-	issue := fs.String("issue", "", "the issue this is about: a number, or its full URL")
+	issue := fs.String("issue", "", "the issue this is about, as its full URL")
 	from := fs.String("from", store.AudienceManager, "who is asking")
 	forward := fs.Int64("forward", 0, "hand this event id to the PO instead of raising a new one")
 	var options repeated
@@ -456,6 +471,9 @@ func ask(args []string) error {
 	}
 	if *title == "" {
 		return errors.New("--title is required")
+	}
+	if err := checkIssue(*issue); err != nil {
+		return err
 	}
 	kind := store.KindQuestion
 	if *link != "" {

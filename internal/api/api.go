@@ -32,29 +32,22 @@ type Config struct {
 	// UndoWindow is how long the person who answered can take it back. Short on
 	// purpose: it catches the wrong button, not a change of mind.
 	UndoWindow time.Duration
-	// RepoURL is a convenience for the common case where every session works in
-	// one repository: a bare issue number is resolved against it. It is never
-	// required — a session that sends a full URL needs no configuration at all,
-	// and sessions across several repositories each send their own.
-	RepoURL string
 }
 
-// IssueURL resolves what a session sent into an address, or "" when it cannot.
+// IssueURL is the address of an issue, or "" when there is none to give.
 //
-// A session knows the repository it is working in; the service does not, and
-// does not guess. So a full URL is taken as it stands, and a bare number is only
-// resolved when a repository has been configured.
+// The service holds no repository of its own to resolve a bare number against,
+// and will not be given one: naming another repository is what this repository
+// must not do, and a number resolved against a repository the session was not
+// working in produces a link to somebody else's issue — worse than no link.
+//
+// New events are refused a bare number on the way in. Rows written before that
+// rule keep theirs, and render as plain text.
 func (c Config) IssueURL(issue string) string {
-	if issue == "" {
-		return ""
-	}
 	if isURL(issue) {
 		return issue
 	}
-	if c.RepoURL == "" {
-		return ""
-	}
-	return strings.TrimRight(c.RepoURL, "/") + "/issues/" + strings.TrimPrefix(issue, "#")
+	return ""
 }
 
 // IssueLabel is what the page shows: "#142", whether the session sent the number
@@ -70,6 +63,15 @@ func (c Config) IssueLabel(issue string) string {
 		return issue
 	}
 	return "#" + strings.TrimPrefix(issue, "#")
+}
+
+// issueRule is what an issue has to be, said the way every other rule is.
+const issueRule = "an issue takes its full URL — a bare number has no repository"
+
+// validIssue reports whether an issue is one the service can do anything with.
+// Empty is fine: not every ask is about an issue.
+func validIssue(issue string) bool {
+	return issue == "" || isURL(issue)
 }
 
 func isURL(s string) bool {
@@ -266,6 +268,9 @@ func (s *Server) addEvent(w http.ResponseWriter, r *http.Request) {
 	case req.Audience != "" && !store.ValidAudience(req.Audience):
 		fail(w, http.StatusBadRequest, "audience must be manager or po")
 		return
+	case !validIssue(req.Issue):
+		fail(w, http.StatusBadRequest, issueRule)
+		return
 	case req.Kind == store.KindValidation && req.Link == "":
 		// A validation without a link is a validation nobody can give.
 		fail(w, http.StatusBadRequest, "a validation must carry a link")
@@ -339,6 +344,10 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if !store.ValidStatus(req.Status) {
 		fail(w, http.StatusBadRequest, "status must be active, waiting or idle")
+		return
+	}
+	if !validIssue(req.Issue) {
+		fail(w, http.StatusBadRequest, issueRule)
 		return
 	}
 	sess, err := s.st.SaveSession(name, req.Status, req.Issue, req.Detail)

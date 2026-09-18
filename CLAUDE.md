@@ -43,6 +43,10 @@ One rule per line where possible.
 - It does not read Claude Code's private registry (`~/.claude/sessions/*.json`,
   `/run/user/*/cc-socks/`) — see `docs/adr/0001-waking-by-long-poll.md`
 - It never puts an event's content in a signal: a count is the whole message
+- It holds no repository address of its own, and takes none as a setting. An
+  issue arrives as its full URL or not at all — resolving a bare number would
+  mean naming another repository, and would link to the wrong issue the moment a
+  session works somewhere else
 - A description is never stored or rendered unsanitized — `richtext.Clean` on the
   way in, see `docs/adr/0004-descriptions-take-a-whitelist.md`
 
