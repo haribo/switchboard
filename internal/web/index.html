@@ -41,7 +41,11 @@
   .sec-head .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
   /* --- sessions table --- */
-  .table-scroll { overflow-x: auto; }
+  /* The table scrolls sideways on a narrow screen and never up and down.
+     overflow-y is stated because CSS does not leave it alone: setting
+     overflow-x to auto turns overflow-y into auto too, and the browser then
+     reserves a vertical gutter on a table that has nothing to scroll. */
+  .table-scroll { overflow-x: auto; overflow-y: hidden; }
   table { width: 100%; border-collapse: collapse; background: var(--surface); }
   thead th {
     text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .09em;
