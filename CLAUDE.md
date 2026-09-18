@@ -68,6 +68,8 @@ One rule per line where possible.
 - A card is built once and never redrawn; a field being typed into is never touched
 - An empty page and an unreachable service must never look alike
 - The browser tab is the only thing allowed to call out
+- Nothing on this page is there for the operator: no schema number, no internal
+  state, no `info` — the PO acts on it or it does not belong
 
 ## Working an issue
 

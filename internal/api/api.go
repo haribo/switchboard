@@ -721,7 +721,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 
 	res := StateResponse{
 		Sessions: s.rows(sessions, mine, withPO), Waiting: []store.Event{}, Infos: []store.Event{},
-		WithPO:  s.withIssueURLs(withPO),
+		WithPO:  s.withIssueURLs(asks(withPO)),
 		Answers: s.withIssueURLs(answers),
 		Pending: len(items),
 	}
@@ -731,6 +731,14 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 			res.Infos = append(res.Infos, e)
 		} else {
 			res.Waiting = append(res.Waiting, e)
+		}
+	}
+	// An info addressed to the PO is still an info: nobody has to act on it, and
+	// the PO's page does not show them at all. It would be visible nowhere
+	// otherwise, so the board carries every open one whatever it was addressed to.
+	for _, e := range withPO {
+		if e.Kind == store.KindInfo {
+			res.Infos = append(res.Infos, e)
 		}
 	}
 	write(w, http.StatusOK, res)
@@ -828,7 +836,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 type POResponse struct {
 	Sessions []SessionRow  `json:"sessions"`
 	ForYou   []store.Event `json:"for_you"` // everything addressed to the PO, and nothing else
-	Infos    []store.Event `json:"infos"`   // the folded-away zone; never in the flow
 	// Recent is what the PO just answered and can still take back. It is sent
 	// so that a page reload does not lose the chance to undo.
 	Recent []store.Event `json:"recent"`
@@ -836,8 +843,12 @@ type POResponse struct {
 	UndoWindow int `json:"undo_window"`
 }
 
-// po is what the page reads. An `info` never reaches ForYou: a text scrolling
-// while the PO reads is the defect this whole tool exists to remove.
+// po is what the page reads.
+//
+// An `info` reaches none of it. It is published so that nobody has to read it
+// now, and the PO in particular has nothing to do with it — the manager reads
+// them on the board and clears them with ack. Showing them here, even folded
+// away, was a section the PO had to notice in order to ignore.
 func (s *Server) po(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.st.Sessions()
 	if err != nil {
@@ -849,37 +860,33 @@ func (s *Server) po(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	infos, err := s.st.OpenEvents(store.AudienceManager)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
 	recent, err := s.st.AnsweredWithin(store.AudiencePO, s.cfg.UndoWindow)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	open, infos = s.withIssueURLs(open), s.withIssueURLs(infos)
+	// The manager's open events are read but not returned: `blocked` is derived
+	// from them, and a session stopped on a migration must show as stopped on
+	// the PO's table even though the ask itself is the manager's business.
+	mgr, err := s.st.OpenEvents(store.AudienceManager)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	open = s.withIssueURLs(open)
 	res := POResponse{
-		Sessions:   s.rows(sessions, open, infos),
+		Sessions:   s.rows(sessions, open, mgr),
 		ForYou:     []store.Event{},
-		Infos:      []store.Event{},
 		Recent:     s.withIssueURLs(recent),
 		UndoWindow: int(s.cfg.UndoWindow / time.Second),
 	}
 	for _, e := range open {
 		if e.Kind == store.KindInfo {
-			res.Infos = append(res.Infos, e)
 			continue
 		}
 		res.ForYou = append(res.ForYou, e)
-	}
-	for _, e := range infos {
-		if e.Kind == store.KindInfo {
-			res.Infos = append(res.Infos, e)
-		}
 	}
 	write(w, http.StatusOK, res)
 }
@@ -892,6 +899,18 @@ type WakeResponse struct {
 
 // htmlEscape keeps content out of the markup the catch-up builds around it.
 func htmlEscape(s string) string { return html.EscapeString(s) }
+
+// asks drops the infos out of a list: they wait on nobody, so they never belong
+// in a list of what somebody has to answer.
+func asks(events []store.Event) []store.Event {
+	out := make([]store.Event, 0, len(events))
+	for _, e := range events {
+		if e.Kind != store.KindInfo {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 // withIssueURLs fills in the address of each event's issue, so a page can link
 // it without knowing the repository.
