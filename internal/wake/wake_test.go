@@ -13,8 +13,19 @@ func at(d time.Duration) time.Time { return base.Add(d) }
 
 func ptr(t time.Time) *time.Time { return &t }
 
+// item builds one pending thing. Urgency and wording are separate now: a
+// blocked dev and a rewording request both shorten the delay, and the signal
+// names them apart.
 func item(d time.Duration, urgent bool) store.Item {
-	return store.Item{At: at(d), Urgent: urgent}
+	kind := store.ItemAsk
+	if urgent {
+		kind = store.ItemStop
+	}
+	return store.Item{At: at(d), Urgent: urgent, Kind: kind}
+}
+
+func reword(d time.Duration) store.Item {
+	return store.Item{At: at(d), Urgent: true, Kind: store.ItemReword}
 }
 
 func TestNothingPendingNeverSignals(t *testing.T) {
@@ -140,5 +151,24 @@ func TestUrgencyDoesNotLeakToLaterEvents(t *testing.T) {
 	}
 	if _, due, _ := Due(items, cur, Default, at(13*time.Minute)); !due {
 		t.Fatal("no signal after the plain debounce closed")
+	}
+}
+
+// A rewording request shortens the delay like a blocked dev — somebody is
+// stopped in front of a page — but the line must not call it blocked, or the
+// manager goes hunting for a stopped session that does not exist. Issue #41.
+func TestARewordingRequestIsNamedApartFromABlockedDev(t *testing.T) {
+	batch, due, _ := Due([]store.Item{reword(0)}, store.Cursor{}, Default, at(45*time.Second))
+	if !due {
+		t.Fatal("a rewording request waited the full batching delay")
+	}
+	if got, want := batch.Line(), "1 event to handle, 1 to reword"; got != want {
+		t.Fatalf("line = %q, want %q", got, want)
+	}
+
+	mixed := []store.Item{item(0, true), reword(0), item(0, false)}
+	batch, _, _ = Due(mixed, store.Cursor{}, Default, at(time.Hour))
+	if got, want := batch.Line(), "3 events to handle, 1 blocked, 1 to reword"; got != want {
+		t.Fatalf("line = %q, want %q", got, want)
 	}
 }

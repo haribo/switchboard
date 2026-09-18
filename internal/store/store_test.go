@@ -518,3 +518,66 @@ func TestRetiringASessionThatIsNotThereIsNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// The PO clicked "explain simply" and nobody was told: the request is a flag on
+// an event addressed to the PO, so neither clause of PendingFor saw it. The
+// person it was asked of learned about it by reading the board for another
+// reason. Issue #41.
+func TestARewordingRequestWaitsOnTheAuthor(t *testing.T) {
+	s, now, _ := testStore(t)
+	// The manager asked the PO; the PO cannot act on the wording.
+	e, _ := s.AddEvent(Event{
+		Author: AudienceManager, Role: RoleManager, Kind: KindQuestion,
+		Audience: AudiencePO, Title: "Do we start phase 2 on Thursday?",
+	})
+
+	*now = base.Add(time.Minute)
+	if _, err := s.AskToExplain(e.ID); err != nil {
+		t.Fatalf("ask to explain: %v", err)
+	}
+
+	items, err := s.PendingFor(AudienceManager)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("pending = %d, want the rewording request", len(items))
+	}
+	if !items[0].At.Equal(base.Add(time.Minute)) {
+		t.Fatalf("it started waiting at %v, want when the PO asked", items[0].At)
+	}
+	// Somebody is stopped in front of a page, which is what `blocked` says too.
+	if !items[0].Urgent {
+		t.Fatal("a rewording request waits the full batching delay")
+	}
+	// The PO still has the question itself waiting on them — they asked for it
+	// to be reworded, not answered elsewhere. What must not land on them is the
+	// rewording request: they made it.
+	po, _ := s.PendingFor(AudiencePO)
+	if len(po) != 1 {
+		t.Fatalf("the PO is waiting on %d item(s), want the question alone", len(po))
+	}
+	if po[0].Urgent {
+		t.Fatal("the rewording request was counted against the PO who made it")
+	}
+}
+
+func TestPublishingTheExplanationClearsIt(t *testing.T) {
+	s, now, _ := testStore(t)
+	e, _ := s.AddEvent(Event{
+		Author: "acme-dev3", Kind: KindQuestion, Audience: AudiencePO, Title: "keyset or offset?",
+	})
+	*now = base.Add(time.Minute)
+	s.AskToExplain(e.ID)
+	if items, _ := s.PendingFor("acme-dev3"); len(items) != 1 {
+		t.Fatalf("pending = %d, want the request", len(items))
+	}
+
+	*now = base.Add(2 * time.Minute)
+	if _, err := s.Explain(e.ID, "acme-dev3", "<p>Which way the export fetches page 2.</p>"); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if items, _ := s.PendingFor("acme-dev3"); len(items) != 0 {
+		t.Fatalf("pending = %d after publishing, want none — a second signal would follow", len(items))
+	}
+}

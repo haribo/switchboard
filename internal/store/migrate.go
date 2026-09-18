@@ -108,6 +108,16 @@ var migrations = []migration{
 			`ALTER TABLE sessions ADD COLUMN waiting_for TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 5,
+		name:    "record when an explanation was asked for",
+		stmts: []string{
+			// The flag alone said nothing about when: the batching measures a
+			// delay from the moment an item started waiting, and had nothing
+			// to measure.
+			`ALTER TABLE events ADD COLUMN explain_asked_at INTEGER`,
+		},
+	},
 }
 
 // SchemaTarget is the schema version this binary expects.

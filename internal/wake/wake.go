@@ -32,10 +32,14 @@ var Default = Config{
 // Batch is what a signal says. It carries counts, never content: the manager is
 // told there is something to look at, and looks at it in one call.
 type Batch struct {
-	Count   int       `json:"count"`   // everything still pending, not just what is new
-	Blocked int       `json:"blocked"` // how many of those are stopped devs
-	Oldest  time.Time `json:"oldest"`  // when the oldest unsignalled item landed
-	Through time.Time `json:"-"`       // newest item this signal covers
+	Count   int `json:"count"`   // everything still pending, not just what is new
+	Blocked int `json:"blocked"` // how many of those are stopped devs
+	// Reword is how many are asks the PO could not act on as worded. Counted
+	// apart from Blocked: both shorten the delay, but calling a rewording
+	// request "blocked" sends the manager hunting for a stopped dev.
+	Reword  int       `json:"reword"`
+	Oldest  time.Time `json:"oldest"` // when the oldest unsignalled item landed
+	Through time.Time `json:"-"`      // newest item this signal covers
 }
 
 // Line is the one line a signal prints. One line is one notification, and one
@@ -48,6 +52,9 @@ func (b Batch) Line() string {
 	s := fmt.Sprintf("%d %s to handle", b.Count, word)
 	if b.Blocked > 0 {
 		s += fmt.Sprintf(", %d blocked", b.Blocked)
+	}
+	if b.Reword > 0 {
+		s += fmt.Sprintf(", %d to reword", b.Reword)
 	}
 	return s
 }
@@ -67,8 +74,11 @@ func Due(items []store.Item, cur store.Cursor, cfg Config, now time.Time) (Batch
 	freshUrgent := false
 
 	for _, it := range items {
-		if it.Urgent {
+		switch it.Kind {
+		case store.ItemStop:
 			batch.Blocked++
+		case store.ItemReword:
+			batch.Reword++
 		}
 		if through.IsZero() || it.At.After(through) {
 			through = it.At

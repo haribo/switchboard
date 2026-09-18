@@ -481,6 +481,14 @@ func printBoard(w io.Writer, st api.StateResponse) {
 			fmt.Fprintf(w, "       options: %s\n", strings.Join(e.Options, " | "))
 		}
 	})
+	// The board is read right after a signal, so it has to name what the signal
+	// counted — a rewording request is invisible otherwise.
+	section(w, "REWORD THESE", asksNeedingWords(st), func(e store.Event) {
+		fmt.Fprintf(w, "  #%d  %-14s %-6s %s\n",
+			e.ID, e.Author, orDash(issueTag(e.Issue)), e.Title)
+		fmt.Fprintf(w, "       the PO cannot act on this wording — `switchboard explain %d --as %s --body \"…\"`\n",
+			e.ID, e.Author)
+	})
 	section(w, "ANSWERS FROM THE PO", st.Answers, func(e store.Event) {
 		fmt.Fprintf(w, "  #%d  %s\n", e.ID, answerLine(e))
 	})
@@ -490,6 +498,20 @@ func printBoard(w io.Writer, st api.StateResponse) {
 	section(w, "INFO", st.Infos, func(e store.Event) {
 		fmt.Fprintf(w, "  #%d  %-14s %s\n", e.ID, e.Author, e.Title)
 	})
+}
+
+// asksNeedingWords are the open asks whose author has been asked to put them in
+// plain words, wherever they are addressed.
+func asksNeedingWords(st api.StateResponse) []store.Event {
+	var out []store.Event
+	for _, list := range [][]store.Event{st.Waiting, st.WithPO} {
+		for _, e := range list {
+			if e.ExplainPending {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
 }
 
 func section(w io.Writer, title string, events []store.Event, line func(store.Event)) {

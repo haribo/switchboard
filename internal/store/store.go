@@ -426,7 +426,8 @@ func (s *Store) AskToExplain(eventID int64) (Event, error) {
 	if e.ExplainPending {
 		return e, nil // already asked; clicking twice changes nothing
 	}
-	if _, err := s.db.Exec(`UPDATE events SET explain_pending = 1 WHERE id = ?`, eventID); err != nil {
+	if _, err := s.db.Exec(`UPDATE events SET explain_pending = 1, explain_asked_at = ? WHERE id = ?`,
+		ms(s.now()), eventID); err != nil {
 		return Event{}, err
 	}
 	s.notify()
@@ -612,9 +613,22 @@ func (s *Store) Ack(author, audience string) (int64, error) {
 // Item is one thing a party still has to act on. `At` is when it became
 // actionable, which is what the debounce window measures from.
 type Item struct {
-	At     time.Time
-	Urgent bool // a dev is actually stopped
+	At time.Time
+	// Urgent shortens the batching delay: somebody is stopped, waiting.
+	Urgent bool
+	// Kind says what the signal calls it. Urgency and wording are separate: a
+	// rewording request is urgent — a human is stopped in front of a page — but
+	// announcing it as "blocked" would send the manager hunting for a stopped
+	// dev that does not exist.
+	Kind string
 }
+
+// What an item is called in a signal.
+const (
+	ItemAsk    = "ask"
+	ItemStop   = "blocked"
+	ItemReword = "reword"
+)
 
 // Cursor records how far a party has already been signalled. Without it, a
 // batch that was announced but not yet dealt with would raise a second signal
@@ -631,13 +645,21 @@ type Cursor struct {
 // read it now.
 func (s *Store) PendingFor(party string) ([]Item, error) {
 	rows, err := s.db.Query(`
-		SELECT e.actionable_at, e.kind = 'blocked'
+		SELECT e.actionable_at, CASE WHEN e.kind = 'blocked' THEN 'blocked' ELSE 'ask' END
 		FROM events e
 		WHERE e.state = 'open' AND e.audience = ? AND e.kind <> 'info'
 		UNION ALL
-		SELECT r.created_at, 0
+		SELECT r.created_at, 'ask'
 		FROM replies r JOIN events e ON e.id = r.event_id
-		WHERE r.seen_at IS NULL AND e.author = ?`, party, party)
+		WHERE r.seen_at IS NULL AND e.author = ?
+		UNION ALL
+		-- A rewording asked of this party. It is a flag on an event addressed
+		-- to somebody else, so neither clause above sees it — and the author
+		-- was never told the PO could not act on their wording.
+		SELECT e.explain_asked_at, 'reword'
+		FROM events e
+		WHERE e.state = 'open' AND e.author = ? AND e.explain_pending = 1
+		  AND e.explain_asked_at IS NOT NULL`, party, party, party)
 	if err != nil {
 		return nil, err
 	}
@@ -645,11 +667,12 @@ func (s *Store) PendingFor(party string) ([]Item, error) {
 	out := []Item{}
 	for rows.Next() {
 		var at64 int64
-		var urgent bool
-		if err := rows.Scan(&at64, &urgent); err != nil {
+		var kind string
+		if err := rows.Scan(&at64, &kind); err != nil {
 			return nil, err
 		}
-		out = append(out, Item{At: at(at64), Urgent: urgent})
+		// Both kinds of stop shorten the delay; only one is called blocked.
+		out = append(out, Item{At: at(at64), Urgent: kind != ItemAsk, Kind: kind})
 	}
 	return out, rows.Err()
 }
