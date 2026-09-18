@@ -121,6 +121,12 @@ func atPtr(v sql.NullInt64) *time.Time {
 // SaveSession records what a session is doing now. since_at only moves when the
 // status or the issue actually changes, so the page can say "since when".
 func (s *Store) SaveSession(name, status, issue, detail string) (Session, error) {
+	return s.SaveSessionWaiting(name, status, issue, detail, "", "")
+}
+
+// SaveSessionWaiting is SaveSession plus what the session is paused on: another
+// session, and the issue it is paused on.
+func (s *Store) SaveSessionWaiting(name, status, issue, detail, waitingOn, waitingFor string) (Session, error) {
 	now := s.now()
 	var prevStatus, prevIssue string
 	var since int64
@@ -135,23 +141,30 @@ func (s *Store) SaveSession(name, status, issue, detail string) (Session, error)
 		since = ms(now)
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO sessions (name, status, issue, detail, since_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			status = excluded.status, issue = excluded.issue,
 			detail = excluded.detail, since_at = excluded.since_at,
-			updated_at = excluded.updated_at`,
-		name, status, issue, detail, since, ms(now))
+			updated_at = excluded.updated_at,
+			waiting_on = excluded.waiting_on, waiting_for = excluded.waiting_for`,
+		name, status, issue, detail, since, ms(now), waitingOn, waitingFor)
 	if err != nil {
 		return Session{}, err
 	}
 	s.notify()
-	return Session{Name: name, Status: status, Issue: issue, Detail: detail, SinceAt: at(since), UpdatedAt: now}, nil
+	return Session{
+		Name: name, Status: status, Issue: issue, Detail: detail,
+		SinceAt: at(since), UpdatedAt: now,
+		WaitingOn: waitingOn, WaitingFor: waitingFor,
+	}, nil
 }
 
 // Sessions lists every known session, by name.
 func (s *Store) Sessions() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT name, status, issue, detail, since_at, updated_at FROM sessions ORDER BY name`)
+	rows, err := s.db.Query(
+		`SELECT name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for
+		 FROM sessions ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +173,8 @@ func (s *Store) Sessions() ([]Session, error) {
 	for rows.Next() {
 		var v Session
 		var since, updated int64
-		if err := rows.Scan(&v.Name, &v.Status, &v.Issue, &v.Detail, &since, &updated); err != nil {
+		if err := rows.Scan(&v.Name, &v.Status, &v.Issue, &v.Detail, &since, &updated,
+			&v.WaitingOn, &v.WaitingFor); err != nil {
 			return nil, err
 		}
 		v.SinceAt, v.UpdatedAt = at(since), at(updated)

@@ -97,6 +97,17 @@ var migrations = []migration{
 			`ALTER TABLE events ADD COLUMN explanation TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 4,
+		name:    "let a session name what it is waiting on",
+		stmts: []string{
+			// The session whose work this one is paused on, and the issue it is
+			// paused on. Both or neither: waiting on somebody with nothing to
+			// point at is the freely-declared flag this design refuses.
+			`ALTER TABLE sessions ADD COLUMN waiting_on TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN waiting_for TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // SchemaTarget is the schema version this binary expects.

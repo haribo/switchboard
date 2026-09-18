@@ -68,6 +68,10 @@ func validIssue(issue string) bool {
 const (
 	RowBlocked = "blocked"        // an open `blocked` event
 	RowOnYou   = "waiting_on_you" // an open ask sitting with the PO
+	// RowOnPeer is a session paused on another session's work. Like the two
+	// above it is derived, not declared: it lifts itself when the session it
+	// names stops declaring the issue it was waiting for.
+	RowOnPeer  = "waiting_on_peer"
 	RowWorking = "working"
 	RowIdle    = "idle"
 )
@@ -80,6 +84,12 @@ type SessionRow struct {
 	IssueLabel string `json:"issue_label,omitempty"`
 	IssueURL   string `json:"issue_url,omitempty"`
 	Detail     string `json:"detail,omitempty"`
+	// WaitingOn is the session this one is paused on, present only while the
+	// pause holds — so a reader is never shown a dependency that has lifted.
+	WaitingOn string `json:"waiting_on,omitempty"`
+	// WaitingForLabel and WaitingForURL render the issue it is paused on.
+	WaitingForLabel string `json:"waiting_for_label,omitempty"`
+	WaitingForURL   string `json:"waiting_for_url,omitempty"`
 	// SinceAt answers "how long has it been on this", and does not move on a
 	// repeated declaration — see the store.
 	SinceAt time.Time `json:"since_at"`
@@ -333,6 +343,12 @@ type sessionRequest struct {
 	Status string `json:"status"`
 	Issue  string `json:"issue"`
 	Detail string `json:"detail"`
+	// WaitingOn and WaitingFor go together: a session paused on another one says
+	// which, and on what. Neither alone is accepted — a pause with nothing to
+	// point at could not lift itself, and would be the freely-declared flag this
+	// design refuses.
+	WaitingOn  string `json:"waiting_on"`
+	WaitingFor string `json:"waiting_for"`
 }
 
 func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
@@ -346,14 +362,28 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !store.ValidStatus(req.Status) {
-		fail(w, http.StatusBadRequest, "status must be active, waiting or idle")
+		fail(w, http.StatusBadRequest, "status must be active or idle")
 		return
 	}
 	if !validIssue(req.Issue) {
 		fail(w, http.StatusBadRequest, issueRule)
 		return
 	}
-	sess, err := s.st.SaveSession(name, req.Status, req.Issue, req.Detail)
+	req.WaitingOn, req.WaitingFor = strings.TrimSpace(req.WaitingOn), strings.TrimSpace(req.WaitingFor)
+	switch {
+	case (req.WaitingOn == "") != (req.WaitingFor == ""):
+		fail(w, http.StatusBadRequest,
+			"waiting_on and waiting_for go together — a pause needs something to point at, or it could never lift")
+		return
+	case req.WaitingOn == name:
+		fail(w, http.StatusBadRequest, "a session cannot be waiting on itself")
+		return
+	case req.WaitingOn != "" && !validIssue(req.WaitingFor):
+		fail(w, http.StatusBadRequest, issueRule)
+		return
+	}
+
+	sess, err := s.st.SaveSessionWaiting(name, req.Status, req.Issue, req.Detail, req.WaitingOn, req.WaitingFor)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
@@ -893,6 +923,13 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 		}
 	}
 
+	// What each session is currently declaring, so a pause can be checked
+	// against it rather than against a flag somebody has to remember to clear.
+	declared := make(map[string]store.Session, len(sessions))
+	for _, sess := range sessions {
+		declared[sess.Name] = sess
+	}
+
 	out := make([]SessionRow, 0, len(sessions))
 	for _, sess := range sessions {
 		row := SessionRow{
@@ -903,6 +940,19 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 			IssueLabel: s.cfg.IssueLabel(sess.Issue),
 			IssueURL:   s.cfg.IssueURL(sess.Issue),
 		}
+		// The pause holds only while the session it names still declares the
+		// issue it was waiting for. When that session moves on — or retires —
+		// it lifts itself, exactly as waiting-on-you lifts when the PO answers.
+		paused := false
+		if sess.WaitingOn != "" {
+			if on, known := declared[sess.WaitingOn]; known && on.Issue == sess.WaitingFor {
+				paused = true
+				row.WaitingOn = sess.WaitingOn
+				row.WaitingForLabel = s.cfg.IssueLabel(sess.WaitingFor)
+				row.WaitingForURL = s.cfg.IssueURL(sess.WaitingFor)
+			}
+		}
+
 		switch {
 		case blocked[sess.Name]:
 			row.State = RowBlocked
@@ -910,6 +960,8 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 			row.State = RowOnYou
 		case sess.Status == store.StatusIdle:
 			row.State = RowIdle
+		case paused:
+			row.State = RowOnPeer
 		default:
 			row.State = RowWorking
 		}

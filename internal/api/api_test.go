@@ -705,7 +705,7 @@ func TestARetiredSessionLeavesThePageButItsEventsRemain(t *testing.T) {
 
 func TestRetiringIsRefusedWhileAsksAreOpen(t *testing.T) {
 	h := newHarness(t)
-	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "waiting"}, http.StatusOK)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
 	created := h.mustDo("POST", "/v1/events", map[string]string{
 		"author": "acme-dev3", "kind": "question", "audience": "po", "title": "Tab or modal?",
 	}, http.StatusCreated)
@@ -1003,4 +1003,109 @@ func TestTheQuietThresholdIsTheServices(t *testing.T) {
 	if first(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"])["quiet"] != true {
 		t.Fatal("not marked past the threshold")
 	}
+}
+
+// A session stopped pending another session's work had no state for it: the
+// table said "working" while the free-text detail said otherwise, in capitals.
+// Issue #26.
+func TestASessionPausedOnAnotherIsShownAsSuch(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{
+		"status": "active", "issue": issueURL(1889),
+	}, http.StatusOK)
+	h.mustDo("PUT", "/v1/sessions/acme-dev4", map[string]string{
+		"status": "active", "issue": issueURL(1826),
+		"waiting_on": "acme-dev2", "waiting_for": issueURL(1889),
+	}, http.StatusOK)
+
+	rows := rowsByName(h)
+	if rows["acme-dev4"]["state"] != "waiting_on_peer" {
+		t.Fatalf("state = %v, want waiting_on_peer", rows["acme-dev4"]["state"])
+	}
+	if rows["acme-dev4"]["waiting_on"] != "acme-dev2" {
+		t.Fatalf("waiting_on = %v", rows["acme-dev4"]["waiting_on"])
+	}
+	if rows["acme-dev4"]["waiting_for_label"] != "#1889" {
+		t.Fatalf("waiting_for_label = %v", rows["acme-dev4"]["waiting_for_label"])
+	}
+	// The session it waits on is working, not waiting.
+	if rows["acme-dev2"]["state"] != "working" {
+		t.Fatalf("acme-dev2 = %v, want working", rows["acme-dev2"]["state"])
+	}
+}
+
+// It clears itself: nobody has to remember to lift it.
+func TestThePauseLiftsWhenTheOtherSessionMovesOn(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{
+		"status": "active", "issue": issueURL(1889),
+	}, http.StatusOK)
+	h.mustDo("PUT", "/v1/sessions/acme-dev4", map[string]string{
+		"status": "active", "issue": issueURL(1826),
+		"waiting_on": "acme-dev2", "waiting_for": issueURL(1889),
+	}, http.StatusOK)
+
+	// acme-dev2 moves to something else. acme-dev4 said nothing.
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{
+		"status": "active", "issue": issueURL(1890),
+	}, http.StatusOK)
+
+	rows := rowsByName(h)
+	if rows["acme-dev4"]["state"] != "working" {
+		t.Fatalf("state = %v, want working — the pause did not lift", rows["acme-dev4"]["state"])
+	}
+	// And the dependency is not shown, so nobody reads a pause that has lifted.
+	if _, shown := rows["acme-dev4"]["waiting_on"]; shown {
+		t.Fatal("a lifted dependency is still on the row")
+	}
+}
+
+func TestThePauseLiftsWhenTheOtherSessionRetires(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev2", map[string]string{
+		"status": "active", "issue": issueURL(1889),
+	}, http.StatusOK)
+	h.mustDo("PUT", "/v1/sessions/acme-dev4", map[string]string{
+		"status": "active", "issue": issueURL(1826),
+		"waiting_on": "acme-dev2", "waiting_for": issueURL(1889),
+	}, http.StatusOK)
+	h.mustDo("DELETE", "/v1/sessions/acme-dev2", nil, http.StatusNoContent)
+
+	if rowsByName(h)["acme-dev4"]["state"] != "working" {
+		t.Fatal("the pause survived the session it pointed at")
+	}
+}
+
+// A session cannot mark itself stopped with nothing to point at — that would be
+// the freely-declared flag this design refuses, and it could never lift.
+func TestAPauseNeedsSomethingToPointAt(t *testing.T) {
+	h := newHarness(t)
+	for _, body := range []map[string]string{
+		{"status": "active", "waiting_on": "acme-dev2"},
+		{"status": "active", "waiting_for": issueURL(1889)},
+		{"status": "active", "waiting_on": "acme-dev4", "waiting_for": issueURL(1889)}, // itself
+		{"status": "active", "waiting_on": "acme-dev2", "waiting_for": "1889"},         // bare number
+	} {
+		h.mustDo("PUT", "/v1/sessions/acme-dev4", body, http.StatusBadRequest)
+	}
+}
+
+// Accepting a status, echoing it back, and displaying another was the worst of
+// the three options. It is refused now, and the message says what to use.
+func TestDeclaringWaitingIsRefused(t *testing.T) {
+	h := newHarness(t)
+	_, out := h.do("PUT", "/v1/sessions/acme-dev4", map[string]string{"status": "waiting"})
+	msg, _ := out["error"].(string)
+	if !strings.Contains(msg, "active or idle") {
+		t.Fatalf("error = %q, want it to name what is accepted", msg)
+	}
+}
+
+func rowsByName(h *harness) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, raw := range list(h.mustDo("GET", "/v1/po", nil, http.StatusOK)["sessions"]) {
+		row := raw.(map[string]any)
+		out[row["name"].(string)] = row
+	}
+	return out
 }
