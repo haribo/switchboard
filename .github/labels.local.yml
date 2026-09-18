@@ -1,0 +1,13 @@
+# Labels proper to this repository, kept alongside the canonical labels.yml.
+#
+# Dependabot creates these itself on its first pull request. Without them here
+# they would be deleted on every sync and recreated on the next update — a loop
+# that says nothing and hides what a sync really changed.
+
+- name: "dependencies"
+  color: "0366d6"
+  description: "dependency update, opened by Dependabot"
+
+- name: "github_actions"
+  color: "000000"
+  description: "GitHub Actions dependency update"
