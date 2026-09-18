@@ -89,5 +89,8 @@ One rule per line where possible.
 
 ## Git
 
-- Git conventions: follow `docs/git.md` strictly
+- `develop` is where work is committed; `main` carries the stable versions
+- Conventional commits, one line, no AI references
 - Never commit or push without explicit approval
+- A deployed build is stamped with `git describe --dirty`, so what runs is always
+  traceable to a commit — or visibly not one
