@@ -1,0 +1,31 @@
+# Arm auto-merge on a dependabot pull request whose highest bump is minor or
+# patch. GitHub merges it once every required check is green; a red one stays
+# open, and a major keeps the human review flow.
+name: dependabot auto-merge
+
+# pull_request_target, not pull_request: a workflow triggered by dependabot gets
+# a read-only token, which cannot arm auto-merge. This one never checks the pull
+# request out — it only reads its metadata and calls the API — so the elevated
+# context has no untrusted code to run.
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read what kind of bump this is
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      # A major changes a contract, and no green suite makes that a non-decision.
+      - name: Arm auto-merge for a minor or patch bump
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
