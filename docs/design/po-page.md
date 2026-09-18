@@ -63,30 +63,16 @@ number resolved against a configured repository links to somebody else's issue.
 A bare number is refused on the way in. Rows written before that rule keep
 theirs, and show as plain text: a link that leads nowhere is worse than no link.
 
-**The last column carries two readings.** *How long* the session has been in this
-status — which does not move on a repeated declaration, so the table can say
-"40 min" rather than "just now" five times a minute — and, when it applies,
-*whether anything is still arriving*:
+**The last column says how long** the session has been in this status — which
+does not move on a repeated declaration, so the table can say "40 min" rather
+than "just now" five times a minute.
 
-```
-acme-dev1   working   #142   action bar, label     41 min
-acme-dev2   working   #145   sign-in screen        41 min · quiet 1h04
-```
-
-Both rows entered their status at the same moment. Only the second has said
-nothing since. Without the second reading they render identically, and a session
-that died an hour ago looks exactly like one working steadily — the state the PO
-would least think to investigate.
-
-**The mark appears only past a threshold**, 30 minutes by default
-(`--quiet-after`). A number beside every row on a healthy fleet is noise, and
-this page's discipline is that only what needs attention calls out. The threshold
-is the service's: it sends `quiet` already decided, so the page never guesses.
-
-It says **quiet**, never *dead* or *stale*. What the service observes is that
-nothing arrived; it cannot know whether the session is on one long task or gone,
-and a page must not display a distinction it has no means of observing. The
-hover text says as much.
+It does **not** say whether anything is still arriving from the session. That
+distinction exists — the service derives it, `GET /v1/state` carries it, and the
+manager's board shows it — but it is the manager's to act on, not the PO's. And
+for a session that declared once and then stopped, the two numbers are the same
+instant written twice: `1h27` beside `quiet 1h26` reads as a second fact and is
+not one.
 
 **"What's happening" stays on one line**, clipped with an ellipsis, with the full
 text in the title attribute. Every row keeps the same height, so the table stays
