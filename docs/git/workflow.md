@@ -55,6 +55,10 @@ a skipped job reports success, an unscheduled one reports nothing.
 - Rebase on the target branch before opening the PR
 - A PR introducing user-facing behaviour updates the design docs in the same
   diff; bug fixes and refactors are exempt
+- A merged branch does not linger: the repository deletes the head branch on
+  merge (`delete_branch_on_merge`). A branch pushed and abandoned without a PR
+  is deleted by a human, one at a time, with the reason recorded — a branch
+  carrying unreviewed commits is work, not litter
 
 ## Additions
 
