@@ -1,0 +1,49 @@
+# Canonical issue labels.
+#
+# This file is authoritative: a label absent from it — and from
+# labels.local.yml, when that file exists — is deleted from the repository.
+# Never edit this file in a repository; local additions go to labels.local.yml.
+#
+# Conventions in issues.md. Deleting a label removes it from every issue
+# carrying it, so relabel before a first sync.
+
+# Type — required, exactly one per issue.
+- name: "type: bug"
+  color: "d73a4a"
+  description: "defect or malfunction"
+  from: ["bug"]
+
+- name: "type: feature"
+  color: "0e8a16"
+  description: "new feature or improvement"
+  from: ["enhancement"]
+
+- name: "type: chore"
+  color: "fef2c0"
+  description: "CI, tooling, maintenance, cleanup"
+
+- name: "type: docs"
+  color: "0075ca"
+  description: "documentation change"
+  from: ["documentation"]
+
+# Priority — optional.
+- name: "priority: critical"
+  color: "b60205"
+  description: "requires immediate attention"
+
+# State — optional, closing qualifiers.
+- name: "state: duplicate"
+  color: "cfd3d7"
+  description: "already exists"
+  from: ["duplicate"]
+
+- name: "state: invalid"
+  color: "e4e669"
+  description: "not a valid issue"
+  from: ["invalid"]
+
+- name: "state: wontfix"
+  color: "ffffff"
+  description: "will not be worked on"
+  from: ["wontfix"]

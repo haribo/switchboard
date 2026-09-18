@@ -2,12 +2,13 @@ package store
 
 import "time"
 
-// Session states. A session is `waiting` when it has asked a human something and
-// cannot move until the answer comes back.
+// Session states, as a session declares them. Being stopped is not among them:
+// whether a session is waiting is derived from what it published and from what
+// it says it is paused on, never from a flag it sets itself. A flag can be
+// forgotten; a derivation cannot go stale.
 const (
-	StatusActive  = "active"
-	StatusWaiting = "waiting"
-	StatusIdle    = "idle"
+	StatusActive = "active"
+	StatusIdle   = "idle"
 )
 
 // Event kinds, as named in the brief.
@@ -35,20 +36,28 @@ const (
 
 // Event lifecycle.
 const (
-	StateOpen     = "open"
-	StateAnswered = "answered"
-	StateDone     = "done"
+	StateOpen      = "open"
+	StateAnswered  = "answered"
+	StateDone      = "done"
+	StateWithdrawn = "withdrawn"
 )
 
 // Session is the living state of one Claude session. GitHub owns the work; this
 // owns where the session currently is.
 type Session struct {
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Issue     string    `json:"issue,omitempty"`
-	Detail    string    `json:"detail,omitempty"`
-	SinceAt   time.Time `json:"since_at"`   // when it entered this status/issue
-	UpdatedAt time.Time `json:"updated_at"` // last sign of life
+	Name    string    `json:"name"`
+	Status  string    `json:"status"`
+	Issue   string    `json:"issue,omitempty"`
+	Detail  string    `json:"detail,omitempty"`
+	SinceAt time.Time `json:"since_at"` // when it entered this status/issue
+	// WaitingOn is the session whose work this one is paused on, and WaitingFor
+	// the issue it is paused on. The pause lifts itself: the service watches
+	// whether that session still declares that issue, so nothing has to be
+	// cleared by hand — and a session cannot claim a pause with nothing to
+	// point at.
+	WaitingOn  string    `json:"waiting_on,omitempty"`
+	WaitingFor string    `json:"waiting_for,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"` // last sign of life
 }
 
 // Event is one typed message published without interrupting anybody.
@@ -76,7 +85,17 @@ type Event struct {
 	State      string     `json:"state"`
 	CreatedAt  time.Time  `json:"created_at"`
 	ClosedAt   *time.Time `json:"closed_at,omitempty"`
-	Reply      *Reply     `json:"reply,omitempty"`
+	// ClosedBy is who withdrew the event, when it was withdrawn rather than
+	// answered. Empty otherwise.
+	ClosedBy string `json:"closed_by,omitempty"`
+	// ExplainPending is true while the PO has asked for this to be put in plain
+	// words and the author has not answered that yet.
+	ExplainPending bool `json:"explain_pending,omitempty"`
+	// Explanation is the plain-words version, sanitized HTML. It sits beside the
+	// original wording, never in place of it: the PO may want the first one back,
+	// and a later reader needs to see what was actually asked.
+	Explanation string `json:"explanation,omitempty"`
+	Reply       *Reply `json:"reply,omitempty"`
 }
 
 // Reply is an answer to an event, kept for good.
@@ -105,13 +124,9 @@ func ValidKind(k string) bool {
 	return false
 }
 
-// ValidStatus reports whether s is one of the three session states.
+// ValidStatus reports whether s is a status a session may declare.
 func ValidStatus(s string) bool {
-	switch s {
-	case StatusActive, StatusWaiting, StatusIdle:
-		return true
-	}
-	return false
+	return s == StatusActive || s == StatusIdle
 }
 
 // ValidAudience reports whether a is manager or po.

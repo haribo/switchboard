@@ -27,10 +27,18 @@ jobs:
           # gitleaks reads history: a secret is not undone by a later commit,
           # it stays in the history and has to be rotated.
           fetch-depth: 0
+      # gitleaks is run directly rather than through its action: the action
+      # derives a commit range from the event, and on a push whose range
+      # reaches the root commit that range is invalid — it then scans nothing,
+      # reports "no leaks found", and fails. A check that passes on an empty
+      # scan is exactly the kind this rule exists to rule out.
       - name: Scan for secrets
-        uses: gitleaks/gitleaks-action@v2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.24.3
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --source . --redact --no-banner --verbose
 
   vulnerabilities:
     name: known vulnerabilities

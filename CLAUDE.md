@@ -20,6 +20,10 @@ One rule per line where possible.
 
 ## Collaboration
 
+- Answers are concise, clear, sharp and precise. No filler, no preamble, no
+  recap of what was just done, no section headings for three sentences. Say the
+  result and what the user has to know or decide; the detail belongs in the code,
+  the docs or the issue
 - When the user asks for an opinion, be severe, honest and challenging — the goal is code that meets professional standards, not the user's agreement. Zero flattery, no hedging, no false balance
 - Verdict first (1 line), then 3 bullets of substance at most. Say plainly when something is wrong, and say so when it is right — an unearned validation is a defect
 - Quality over satisfaction — push back on over-engineering, incoherence, and unjustified additions, including when user-proposed
@@ -43,8 +47,20 @@ One rule per line where possible.
 - It does not read Claude Code's private registry (`~/.claude/sessions/*.json`,
   `/run/user/*/cc-socks/`) — see `docs/adr/0001-waking-by-long-poll.md`
 - It never puts an event's content in a signal: a count is the whole message
+- It holds no repository address of its own, and takes none as a setting. An
+  issue arrives as its full URL or not at all — resolving a bare number would
+  mean naming another repository, and would link to the wrong issue the moment a
+  session works somewhere else
 - A description is never stored or rendered unsanitized — `richtext.Clean` on the
   way in, see `docs/adr/0004-descriptions-take-a-whitelist.md`
+
+## Input rules
+
+- Validation belongs on the way in. A read or a delete accepts anything the store
+  can hold: applying a creation rule to them rejects exactly the data that most
+  needs reaching — a row written before the rule existed
+- Tightening an accepted shape is not finished until the routes that reach
+  existing rows have been checked against the new rule
 
 ## The PO's page
 
@@ -52,6 +68,8 @@ One rule per line where possible.
 - A card is built once and never redrawn; a field being typed into is never touched
 - An empty page and an unreachable service must never look alike
 - The browser tab is the only thing allowed to call out
+- Nothing on this page is there for the operator: no schema number, no internal
+  state, no `info` — the PO acts on it or it does not belong
 
 ## Working an issue
 
@@ -78,6 +96,9 @@ One rule per line where possible.
 ## Git
 
 - `develop` is where work is committed; `main` carries the stable versions
+- Commit conventions: follow `docs/git/commits.md` strictly
+- Git workflow: follow `docs/git/workflow.md` strictly
+- Issue conventions: follow `docs/git/issues.md` strictly
 - Conventional commits, one line, no AI references
 - Never commit or push without explicit approval
 - A deployed build is stamped with `git describe --dirty`, so what runs is always

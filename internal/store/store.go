@@ -121,6 +121,12 @@ func atPtr(v sql.NullInt64) *time.Time {
 // SaveSession records what a session is doing now. since_at only moves when the
 // status or the issue actually changes, so the page can say "since when".
 func (s *Store) SaveSession(name, status, issue, detail string) (Session, error) {
+	return s.SaveSessionWaiting(name, status, issue, detail, "", "")
+}
+
+// SaveSessionWaiting is SaveSession plus what the session is paused on: another
+// session, and the issue it is paused on.
+func (s *Store) SaveSessionWaiting(name, status, issue, detail, waitingOn, waitingFor string) (Session, error) {
 	now := s.now()
 	var prevStatus, prevIssue string
 	var since int64
@@ -135,23 +141,30 @@ func (s *Store) SaveSession(name, status, issue, detail string) (Session, error)
 		since = ms(now)
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO sessions (name, status, issue, detail, since_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			status = excluded.status, issue = excluded.issue,
 			detail = excluded.detail, since_at = excluded.since_at,
-			updated_at = excluded.updated_at`,
-		name, status, issue, detail, since, ms(now))
+			updated_at = excluded.updated_at,
+			waiting_on = excluded.waiting_on, waiting_for = excluded.waiting_for`,
+		name, status, issue, detail, since, ms(now), waitingOn, waitingFor)
 	if err != nil {
 		return Session{}, err
 	}
 	s.notify()
-	return Session{Name: name, Status: status, Issue: issue, Detail: detail, SinceAt: at(since), UpdatedAt: now}, nil
+	return Session{
+		Name: name, Status: status, Issue: issue, Detail: detail,
+		SinceAt: at(since), UpdatedAt: now,
+		WaitingOn: waitingOn, WaitingFor: waitingFor,
+	}, nil
 }
 
 // Sessions lists every known session, by name.
 func (s *Store) Sessions() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT name, status, issue, detail, since_at, updated_at FROM sessions ORDER BY name`)
+	rows, err := s.db.Query(
+		`SELECT name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for
+		 FROM sessions ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -160,13 +173,66 @@ func (s *Store) Sessions() ([]Session, error) {
 	for rows.Next() {
 		var v Session
 		var since, updated int64
-		if err := rows.Scan(&v.Name, &v.Status, &v.Issue, &v.Detail, &since, &updated); err != nil {
+		if err := rows.Scan(&v.Name, &v.Status, &v.Issue, &v.Detail, &since, &updated,
+			&v.WaitingOn, &v.WaitingFor); err != nil {
 			return nil, err
 		}
 		v.SinceAt, v.UpdatedAt = at(since), at(updated)
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// ErrStillWaiting is returned when a session cannot be retired because it still
+// has asks on somebody's plate.
+var ErrStillWaiting = errors.New("session still has open asks")
+
+// RetireSession removes a session's row from the table.
+//
+// Its events stay: they are the trace of decisions, and deleting them would
+// rewrite what was decided because the session that asked has gone. The page
+// renders an ask by its author's name, not by looking the row up, so a card
+// outlives the row that raised it.
+//
+// A session with open asks is refused. Retiring it would leave the PO holding
+// cards whose author no longer exists, and an answer nobody is waiting to read.
+// Answer them, or withdraw them, then retire.
+//
+// Retiring is not final: the same name on the next save starts a fresh row —
+// a session relaunched on Saturday should not inherit last Tuesday's "since".
+func (s *Store) RetireSession(name string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT count(*) FROM sessions WHERE name = ?`, name).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+
+	var open int
+	if err := tx.QueryRow(
+		`SELECT count(*) FROM events WHERE author = ? AND state = 'open' AND kind <> 'info'`,
+		name).Scan(&open); err != nil {
+		return err
+	}
+	if open > 0 {
+		return fmt.Errorf("%w: %d still open — answer or withdraw them first", ErrStillWaiting, open)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE name = ?`, name); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notify()
+	return nil
 }
 
 // --- events -----------------------------------------------------------------
@@ -230,7 +296,8 @@ func (s *Store) AnsweredFor(author string) ([]Event, error) {
 func (s *Store) queryEvents(where string, args ...any) ([]Event, error) {
 	const base = `
 		SELECT e.id, e.author, e.role, e.kind, e.title, e.body, e.link, e.issue, e.audience,
-		       e.options, e.state, e.created_at, e.closed_at,
+		       e.options, e.state, e.created_at, e.closed_at, e.closed_by,
+		       e.explain_pending, e.explanation,
 		       r.id, r.author, r.text, r.option, r.created_at, r.seen_at
 		FROM events e
 		LEFT JOIN replies r ON r.event_id = e.id
@@ -250,7 +317,8 @@ func (s *Store) queryEvents(where string, args ...any) ([]Event, error) {
 		var rAuthor, rText, rOption sql.NullString
 		var rCreated, rSeen sql.NullInt64
 		if err := rows.Scan(&e.ID, &e.Author, &e.Role, &e.Kind, &e.Title, &e.Body, &e.Link, &e.Issue, &e.Audience,
-			&opts, &e.State, &created, &closed,
+			&opts, &e.State, &created, &closed, &e.ClosedBy,
+			&e.ExplainPending, &e.Explanation,
 			&rID, &rAuthor, &rText, &rOption, &rCreated, &rSeen); err != nil {
 			return nil, err
 		}
@@ -282,6 +350,111 @@ func (s *Store) Reroute(id int64, audience string) error {
 	}
 	s.notify()
 	return nil
+}
+
+// ErrNotOpen is returned when an event cannot be withdrawn because it is no
+// longer waiting on anybody.
+var ErrNotOpen = errors.New("event is not open")
+
+// ErrNotAllowed is returned when somebody tries to withdraw an event that is
+// not theirs to withdraw.
+var ErrNotAllowed = errors.New("not yours to withdraw")
+
+// Withdraw closes an open event without answering it — the ask turned out not
+// to need one, usually because the asker found the answer themselves.
+//
+// Only the author can withdraw their own ask; the manager can withdraw any of
+// them, because dispatching is their job. Someone is always accountable for a
+// card disappearing from under the reader, so who did it is recorded.
+//
+// An answered event is refused: taking an answer back is Undo, and the two must
+// not overlap.
+func (s *Store) Withdraw(eventID int64, by string) (Event, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback()
+
+	var author, state string
+	err = tx.QueryRow(`SELECT author, state FROM events WHERE id = ?`, eventID).Scan(&author, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, ErrNotFound
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	if state != StateOpen {
+		return Event{}, fmt.Errorf("%w: it is %s", ErrNotOpen, state)
+	}
+	if by != author && by != AudienceManager {
+		return Event{}, fmt.Errorf("%w: %s was raised by %s", ErrNotAllowed, by, author)
+	}
+
+	now := s.now()
+	if _, err := tx.Exec(`UPDATE events SET state = ?, closed_at = ?, closed_by = ? WHERE id = ?`,
+		StateWithdrawn, ms(now), by, eventID); err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, err
+	}
+	s.notify()
+	return s.Event(eventID)
+}
+
+// ErrNotAnAsk is returned when something is asked of an event that answers to
+// nobody — an `info` has no wording to argue with.
+var ErrNotAnAsk = errors.New("this event asks nothing")
+
+// AskToExplain records that the PO wants an ask put in plain words.
+//
+// It does not change the event's state: the question is still open and still
+// waiting for an answer, just not in the terms it was written in. Asking twice
+// is the same as asking once — a second click must not raise a second request.
+func (s *Store) AskToExplain(eventID int64) (Event, error) {
+	e, err := s.Event(eventID)
+	if err != nil {
+		return Event{}, err
+	}
+	if e.State != StateOpen {
+		return Event{}, fmt.Errorf("%w: it is %s", ErrNotOpen, e.State)
+	}
+	if e.Kind == KindInfo {
+		return Event{}, ErrNotAnAsk
+	}
+	if e.ExplainPending {
+		return e, nil // already asked; clicking twice changes nothing
+	}
+	if _, err := s.db.Exec(`UPDATE events SET explain_pending = 1 WHERE id = ?`, eventID); err != nil {
+		return Event{}, err
+	}
+	s.notify()
+	return s.Event(eventID)
+}
+
+// Explain publishes the plain-words version and clears the request.
+//
+// The author rewrites their own ask; the manager may do it for them, because
+// dispatching is their job and a session can be gone — a quota exhausted, a
+// session retired — while the PO is still holding the card.
+func (s *Store) Explain(eventID int64, by, html string) (Event, error) {
+	e, err := s.Event(eventID)
+	if err != nil {
+		return Event{}, err
+	}
+	if e.State != StateOpen {
+		return Event{}, fmt.Errorf("%w: it is %s", ErrNotOpen, e.State)
+	}
+	if by != e.Author && by != AudienceManager {
+		return Event{}, fmt.Errorf("%w: %s was raised by %s", ErrNotAllowed, by, e.Author)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE events SET explanation = ?, explain_pending = 0 WHERE id = ?`, html, eventID); err != nil {
+		return Event{}, err
+	}
+	s.notify()
+	return s.Event(eventID)
 }
 
 // --- replies ----------------------------------------------------------------

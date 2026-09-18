@@ -26,26 +26,18 @@ an example config at `~/.config/switchboard/switchboard.env`. No root, nothing i
 `~/.local/share/switchboard/switchboard.db`. No authentication: it runs on the
 machine, for the sessions on it.
 
-**Issues become links on their own** when a session sends the address it already
-knows:
+**Issues are given as their full URL:**
 
 ```bash
 switchboard state --session acme-dev3 --status active \
     --issue https://github.com/acme/app/issues/142
 ```
 
-The page shows `#142` and links it. Nothing to configure — the session knows the
-repository it is working in, the service does not, and does not guess.
-
-If every session works in one repository, set it once and bare numbers resolve
-against it:
-
-```
-SWITCHBOARD_REPO=https://github.com/acme/app
-```
-
-Without that, a bare `--issue 142` shows as plain text: a link that leads nowhere
-is worse than no link.
+The page shows `#142` and links it. A bare number is refused — the service holds
+no repository to resolve it against, and will not be given one: a number resolved
+against a repository the session was not working in links to somebody else's
+issue, which is worse than no link. A session knows its own repository, so
+sending the whole address costs it nothing.
 
 The service follows your login session — it starts with it and stops with it. A
 dev session publishing while you are logged out gets a clear
@@ -95,7 +87,22 @@ switchboard event --from acme-dev3 --kind validation --issue 142 \
 
 # I am actually stopped
 switchboard event --from acme-dev3 --kind blocked --title "Migration failing on the test database"
+
+# never mind — I found the answer myself
+switchboard withdraw "$id" --as acme-dev3
+
+# I am done for good: take my line off the table (my events stay)
+switchboard retire acme-dev3
 ```
+
+```bash
+# the PO could not act on how I worded it — say it again, plainly
+switchboard explain "$id" --as acme-dev3 --body "<p>Which way the export fetches page 2.</p>"
+```
+
+`await` stops on three outcomes, and exits differently for each so a session can
+branch without reading prose: **0** an answer, **3** the ask was withdrawn, **4**
+the PO asked for it to be put in plain words — reword it and await again.
 
 `--wait 2h` on `event` publishes and waits in one go.
 
@@ -113,6 +120,7 @@ switchboard ask --title "Do we start phase 2 on Thursday?" --option "Phase 2" --
 switchboard ask --forward 12   # hand a dev's question to the PO
 switchboard ack                # "read": the info and the PO's answers
 switchboard undo 12 --as manager
+switchboard withdraw 12 --as manager   # close an ask that no longer needs an answer
 ```
 
 ### The grouped signal
@@ -136,8 +144,13 @@ persistent Monitor on that command: each line becomes a notification, and one
 notification is enough to restart an idle session.
 
 If the service becomes unreachable, `watch` says so — once, on the same output,
-after two minutes. Silence that looks like "nothing to do" would be an invisible
-outage.
+after two minutes, and says so again when it comes back. Silence that looks like
+"nothing to do" would be an invisible outage.
+
+A restart produces **nothing at all**: the loss is held for that delay, so a
+deploy does not wake a session. `await` holds the same way rather than failing —
+a session waiting on its own question does not lose the wait because the service
+was upgraded under it.
 
 Defaults: 3 minutes of batching, 5 minutes minimum between two signals, 30
 seconds when a dev is blocked. See [docs/design/waking.md](docs/design/waking.md).

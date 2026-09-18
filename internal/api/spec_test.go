@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"switchboard/internal/store"
 )
 
 // The specification and the router must describe the same service. Checked in
@@ -98,9 +100,9 @@ func TestTheSpecificationEnumsMatchWhatIsAccepted(t *testing.T) {
 		"Kind":          {"info", "question", "validation", "blocked"},
 		"Audience":      {"manager", "po"},
 		"Role":          {"dev", "manager", "po"},
-		"EventState":    {"open", "answered", "done"},
-		"SessionStatus": {"active", "waiting", "idle"},
-		"TableState":    {RowBlocked, RowOnYou, RowWorking, RowIdle},
+		"EventState":    {"open", "answered", "done", "withdrawn"},
+		"SessionStatus": {store.StatusActive, store.StatusIdle},
+		"TableState":    {RowBlocked, RowOnYou, RowOnPeer, RowWorking, RowIdle},
 	} {
 		got := parsed.Components.Schemas[name].Enum
 		if len(got) != len(want) {
@@ -150,5 +152,48 @@ func TestTheSpecIsReachableAlongsideThePage(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/openapi.json", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("with a page mounted, /v1/openapi.json = %d", rec.Code)
+	}
+}
+
+// The shape the specification promises for a session name is the shape the
+// service enforces. A contract that describes a different rule than the one
+// applied sends callers to a 400 they followed the document to reach.
+func TestTheDeclaredSessionNameShapeIsTheEnforcedOne(t *testing.T) {
+	doc, err := SpecJSON()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	var parsed struct {
+		Components struct {
+			Parameters map[string]struct {
+				Schema struct {
+					Pattern   string `json:"pattern"`
+					MaxLength int    `json:"maxLength"`
+				} `json:"schema"`
+			} `json:"parameters"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(doc, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	declared := parsed.Components.Parameters["SessionName"].Schema
+	if declared.Pattern != sessionName.String() {
+		t.Errorf("spec pattern %q, service enforces %q", declared.Pattern, sessionName.String())
+	}
+	if declared.MaxLength != maxSessionName {
+		t.Errorf("spec maxLength %d, service enforces %d", declared.MaxLength, maxSessionName)
+	}
+
+	// And the rule really is the one applied, either way round.
+	for _, ok := range []string{"acme-dev3", "a", "D3V.1_x"} {
+		if err := validSessionName(ok); err != nil {
+			t.Errorf("%q matches the declared pattern but was refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "a/b", "a b", "a?b", strings.Repeat("a", maxSessionName+1)} {
+		if err := validSessionName(bad); err == nil {
+			t.Errorf("%q does not match the declared pattern but was accepted", bad)
+		}
 	}
 }

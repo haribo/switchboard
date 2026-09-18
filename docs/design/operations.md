@@ -18,16 +18,11 @@ just install
 ```
 
 Builds, installs, writes an example config **only if none exists**, enables and
-starts the service, then prints `db status`. Nothing else is required: sessions
-that send a full issue address get links without any configuration.
-
-`SWITCHBOARD_REPO` is a convenience for the case where every session works in one
-repository — it lets them send bare issue numbers:
+starts the service, then prints `db status`. Nothing else is required: the
+service is told nothing about any repository, and sessions send the full URL of
+the issue they are working on.
 
 ```bash
-$EDITOR ~/.config/switchboard/switchboard.env
-systemctl --user restart switchboard
-```
 
 The service runs under `default.target` with no linger: it starts when your
 session does and stops when the session ends. **A dev session that publishes
@@ -42,6 +37,25 @@ pre-commit hook refuses a commit made directly on it — run `just hooks` once
 after cloning, or the file is just a sign with no door behind it. A build is
 stamped with `git describe --tags --always --dirty`, so `just health` always says
 which commit is answering — and says `-dirty` when it is not one.
+
+## What the service says at startup
+
+The version, the database and the batching settings — and, when there are any,
+the `SWITCHBOARD_*` variables it is **not** reading:
+
+```
+no longer used, safe to delete: SWITCHBOARD_REPO (issues now carry their full URL)
+not a setting, ignored (misspelled?): SWITCHBOARD_DEBOUCE
+```
+
+Two lines, deliberately apart. A setting the product dropped is a line to delete;
+a misspelled one is a line to correct, and the operator would otherwise conclude
+the batching is broken rather than that they typed `DEBOUCE`. The config file is
+never overwritten by an upgrade, which is why a dropped setting survives in it —
+so it is named rather than ignored.
+
+It is a warning, never a refusal: a stale line must not stop a service that would
+otherwise run correctly.
 
 ## Update
 
