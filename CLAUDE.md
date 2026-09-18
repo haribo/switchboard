@@ -90,6 +90,9 @@ One rule per line where possible.
 ## Git
 
 - `develop` is where work is committed; `main` carries the stable versions
+- Commit conventions: follow `docs/git/commits.md` strictly
+- Git workflow: follow `docs/git/workflow.md` strictly
+- Issue conventions: follow `docs/git/issues.md` strictly
 - Conventional commits, one line, no AI references
 - Never commit or push without explicit approval
 - A deployed build is stamped with `git describe --dirty`, so what runs is always
