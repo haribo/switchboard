@@ -20,6 +20,10 @@ One rule per line where possible.
 
 ## Collaboration
 
+- Answers are concise, clear, sharp and precise. No filler, no preamble, no
+  recap of what was just done, no section headings for three sentences. Say the
+  result and what the user has to know or decide; the detail belongs in the code,
+  the docs or the issue
 - When the user asks for an opinion, be severe, honest and challenging — the goal is code that meets professional standards, not the user's agreement. Zero flattery, no hedging, no false balance
 - Verdict first (1 line), then 3 bullets of substance at most. Say plainly when something is wrong, and say so when it is right — an unearned validation is a defect
 - Quality over satisfaction — push back on over-engineering, incoherence, and unjustified additions, including when user-proposed
