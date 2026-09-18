@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+// Unreachable is a failure to reach the service at all — a refused connection,
+// a dropped one — as opposed to an answer the service gave. A restart looks like
+// this, and so does an outage; only time separates them.
+type Unreachable struct {
+	Addr string
+	Err  error
+}
+
+func (e Unreachable) Error() string {
+	return fmt.Sprintf("switchboard unreachable at %s: %v", e.Addr, e.Err)
+}
+
+func (e Unreachable) Unwrap() error { return e.Err }
+
 // DefaultServer is where the service listens unless told otherwise.
 const DefaultServer = "http://127.0.0.1:8787"
 
@@ -51,7 +65,9 @@ func (c *client) call(method, path string, body, out any) (bool, error) {
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("switchboard unreachable at %s: %w", c.base, err)
+		// Told apart from an answer the service gave: a caller that can wait
+		// out a restart must not wait out a 404.
+		return false, Unreachable{Addr: c.base, Err: err}
 	}
 	defer res.Body.Close()
 

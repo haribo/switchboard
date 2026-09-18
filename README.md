@@ -144,8 +144,13 @@ persistent Monitor on that command: each line becomes a notification, and one
 notification is enough to restart an idle session.
 
 If the service becomes unreachable, `watch` says so — once, on the same output,
-after two minutes. Silence that looks like "nothing to do" would be an invisible
-outage.
+after two minutes, and says so again when it comes back. Silence that looks like
+"nothing to do" would be an invisible outage.
+
+A restart produces **nothing at all**: the loss is held for that delay, so a
+deploy does not wake a session. `await` holds the same way rather than failing —
+a session waiting on its own question does not lose the wait because the service
+was upgraded under it.
 
 Defaults: 3 minutes of batching, 5 minutes minimum between two signals, 30
 seconds when a dev is blocked. See [docs/design/waking.md](docs/design/waking.md).

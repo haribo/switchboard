@@ -339,23 +339,25 @@ func event(args []string) error {
 	if *wait <= 0 {
 		return nil
 	}
-	return waitReply(c, e.ID, *wait)
+	return waitReply(c, e.ID, *wait, 2*time.Minute)
 }
 
 func await(args []string) error {
 	fs, server := flags("await")
 	timeout := fs.Duration("timeout", time.Hour, "give up after this long")
+	downAfter := fs.Duration("down-alert", 2*time.Minute, "report an unreachable service after this long")
 	id, err := oneID(parse(fs, args))
 	if err != nil {
 		return err
 	}
-	return waitReply(newClient(*server), id, *timeout)
+	return waitReply(newClient(*server), id, *timeout, *downAfter)
 }
 
 // waitReply blocks on the server until the event is answered, re-issuing the
 // long-poll as it expires. A dev calls this and picks its work back up alone.
-func waitReply(c *client, id int64, timeout time.Duration) error {
+func waitReply(c *client, id int64, timeout, downAfter time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var down outage
 	for {
 		left := time.Until(deadline)
 		if left <= 0 {
@@ -367,8 +369,24 @@ func waitReply(c *client, id int64, timeout time.Duration) error {
 		var e store.Event
 		got, err := c.call(http.MethodGet,
 			fmt.Sprintf("/v1/events/%d/reply?wait=%d", id, secs(left)), nil, &e)
+
+		var gone Unreachable
+		if errors.As(err, &gone) {
+			// A deploy restarts the service under a waiting session. Dying here
+			// would lose the wait and read as a failure, when nothing failed;
+			// the session would go back to work without its answer. So it waits
+			// the service out, saying nothing unless the loss lasts.
+			if line := down.failed(time.Now(), downAfter); line != "" {
+				fmt.Fprintln(os.Stderr, line)
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if err != nil {
 			return err
+		}
+		if line := down.recovered(time.Now()); line != "" {
+			fmt.Fprintln(os.Stderr, line)
 		}
 		if got && e.Reply != nil {
 			// Say it has been read: an undo must know it is too late to be
@@ -623,25 +641,37 @@ func watch(args []string) error {
 	}
 
 	c := newClient(*server)
-	path := fmt.Sprintf("/v1/wake?audience=%s&wait=%d", *party, secs(*poll))
+	long := fmt.Sprintf("/v1/wake?audience=%s&wait=%d", *party, secs(*poll))
+	// While the service is missing, ask without blocking. The long poll holds
+	// the connection for minutes, so coming back would not be noticed until it
+	// expired — and the reader would be left believing the outage still runs.
+	short := fmt.Sprintf("/v1/wake?audience=%s&wait=0", *party)
 	var down outage
 	for {
+		path := long
+		if down.ongoing() {
+			path = short
+		}
 		var batch api.WakeResponse
 		got, err := c.call(http.MethodGet, path, nil, &batch)
 		if err != nil {
 			// The watch must outlive a restart of the service: a subscription
-			// that dies stops waking anybody, silently.
-			fmt.Fprintln(os.Stderr, "switchboard:", err)
-			if line := down.report(time.Now(), *downAfter); line != "" {
-				// Standard output, deliberately: a service that is down must
-				// reach the manager, not sit in a log nobody reads. Silence
-				// and "nothing to do" must never look alike.
+			// that dies stops waking anybody, silently. Nothing is printed
+			// while the delay runs — not even on standard error, which a
+			// per-attempt line would fill with one entry per deploy.
+			//
+			// Past the delay it goes to standard output, deliberately: a
+			// service that is down must reach the manager, not sit in a log
+			// nobody reads. Silence and "nothing to do" must never look alike.
+			if line := down.failed(time.Now(), *downAfter); line != "" {
 				fmt.Println(line)
 			}
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		down.clear()
+		if line := down.recovered(time.Now()); line != "" {
+			fmt.Println(line)
+		}
 		if !got {
 			continue // nothing ripe; the long-poll simply expired
 		}
@@ -653,27 +683,48 @@ func watch(args []string) error {
 	}
 }
 
-// outage tracks a service that stopped answering, so the watch says so once —
-// and only once — rather than every five seconds or never.
+// outage decides what a caller says about a service that stopped answering.
+//
+// The rule is one line, once, and only for a loss that lasts: a restart is not
+// an outage, and a warning that cries at every deploy teaches its reader to
+// ignore it — so the day the service really stays down, the line reads like all
+// the ones before it. Nothing at all is printed while the delay runs.
 type outage struct {
-	since   time.Time
-	alerted bool
+	since    time.Time
+	alerted  bool
+	recovery bool // an announced outage owes a recovery line
 }
 
-// report returns the line to print, or "" when there is nothing new to say.
-func (o *outage) report(now time.Time, after time.Duration) string {
+// failed is called on every failed attempt. It returns the line to print, or ""
+// — which is the usual case, including for a whole restart.
+func (o *outage) failed(now time.Time, after time.Duration) string {
 	if o.since.IsZero() {
 		o.since = now
 	}
 	if o.alerted || now.Sub(o.since) < after {
 		return ""
 	}
-	o.alerted = true
-	return fmt.Sprintf("switchboard unreachable for %s — nothing is getting through", roundDuration(now.Sub(o.since)))
+	o.alerted, o.recovery = true, true
+	return fmt.Sprintf("switchboard unreachable for %s — nothing is getting through",
+		roundDuration(now.Sub(o.since)))
 }
 
-// clear forgets an outage that is over, so the next one is announced again.
-func (o *outage) clear() { *o = outage{} }
+// ongoing reports whether the service is currently missing, announced or not.
+func (o *outage) ongoing() bool { return !o.since.IsZero() }
+
+// recovered is called on every success. It returns a line only when an outage
+// was announced: a reader told the line was dead needs to be told it is alive
+// again, and a reader told nothing needs nothing.
+func (o *outage) recovered(now time.Time) string {
+	owed := o.recovery
+	down := o.since
+	*o = outage{}
+	if !owed {
+		return ""
+	}
+	return fmt.Sprintf("switchboard is answering again — it was unreachable for %s",
+		roundDuration(now.Sub(down)))
+}
 
 func roundDuration(d time.Duration) time.Duration {
 	if d < time.Minute {
