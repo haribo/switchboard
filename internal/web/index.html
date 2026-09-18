@@ -186,10 +186,6 @@
   }
   .foot .warn { color: var(--stop); font-weight: 600; }
 
-  .fold { border-top: 1px solid var(--line); margin-top: 34px; padding-top: 12px; }
-  .fold summary { cursor: pointer; color: var(--muted); font-size: 13px; }
-  .fold ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
-  .fold li { margin-bottom: 6px; }
 
   @media (max-width: 620px) { .ask-head .kind { margin-left: 0; } }
 </style>
@@ -248,10 +244,6 @@
     <div class="asks" id="asks"></div>
   </section>
 
-  <details class="fold" id="infos-box" hidden>
-    <summary id="infos-summary">Info</summary>
-    <ul id="infos"></ul>
-  </details>
 
   <div class="foot" id="foot"></div>
 </main>
@@ -684,18 +676,6 @@ function reorder(items) {
   for (const c of wanted) box.append(c);
 }
 
-function renderInfos(infos) {
-  // Same rule: no info, no folded section to notice and ignore.
-  document.getElementById("infos-box").hidden = infos.length === 0;
-  const box = document.getElementById("infos");
-  document.getElementById("infos-summary").textContent =
-    infos.length ? `Info (${infos.length})` : "Info";
-  const wanted = infos.map(i => String(i.id)).join(",");
-  if (box.dataset.ids === wanted) return;
-  box.dataset.ids = wanted;
-  box.replaceChildren(...infos.map(i => el("li", null, `${i.author} — ${i.title}`)));
-}
-
 // --- polling ----------------------------------------------------------------
 
 function setSync(text, down) {
@@ -715,7 +695,6 @@ async function tick() {
     renderSessions(data.sessions);
     renderAsks(data.for_you);
     renderRecent(data.recent || []);
-    renderInfos(data.infos);
     setTab(data.for_you.length);
     setSync("updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
   } catch {
@@ -734,13 +713,14 @@ async function health() {
     const h = await res.json();
     if (bootVersion === null) bootVersion = h.version;
     const foot = document.getElementById("foot");
-    foot.replaceChildren(el("span", null, `switchboard ${h.version}`),
-                         el("span", null, `schema ${h.schema}`));
+    foot.replaceChildren(el("span", null, `switchboard ${h.version}`));
     if (h.version !== bootVersion) {
       foot.append(el("span", "warn", "the service was updated — reload this page"));
     }
     if (!h.ok) {
-      foot.append(el("span", "warn", `schema ${h.schema}, expected ${h.schema_target}`));
+      // Said without the jargon: what the PO needs to know is that the page may
+      // be showing something stale, not which schema number is involved.
+      foot.append(el("span", "warn", "the service is not running normally — tell the manager"));
     }
   } catch {
     // The sync indicator already reports an unreachable service.

@@ -156,8 +156,10 @@ somebody is typing into it.
   not observed — the same failure as a link that leads nowhere. Fetching the
   reason would mean a second call for a case that costs the PO one click, so the
   page states what is certain and stops there.
-- `info` never reaches this list. It sits in a folded section at the bottom,
-  closed, with a count.
+- `info` does not reach this page at all. It is published so that nobody has to
+  read it now, and the PO least of all — it is the manager who reads them on the
+  board and clears them with `ack`. A folded section was still a section the PO
+  had to notice in order to ignore.
 - **A section with nothing in it is not shown at all.** No asks, no *Your call*;
   no info, no folded section. A heading, a zero and a sentence saying the same
   thing three times is three times the reading for no news — and a page whose

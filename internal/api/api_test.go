@@ -150,8 +150,13 @@ func TestNoInfoEverReachesThePOsList(t *testing.T) {
 	if got := len(list(po["for_you"])); got != 0 {
 		t.Fatalf("%d info(s) reached the PO's list", got)
 	}
-	if got := len(list(po["infos"])); got != 2 {
-		t.Fatalf("infos = %d, want both, in the folded zone", got)
+	// Nor anywhere else on the page: an info is published so that nobody has to
+	// read it now, and the PO least of all. The manager reads them on the board.
+	if _, present := po["infos"]; present {
+		t.Fatal("the PO's page is still served a list of infos")
+	}
+	if got := len(list(h.mustDo("GET", "/v1/state", nil, http.StatusOK)["infos"])); got != 2 {
+		t.Fatalf("the manager's board lost them: %d, want 2", got)
 	}
 }
 
@@ -698,8 +703,8 @@ func TestARetiredSessionLeavesThePageButItsEventsRemain(t *testing.T) {
 	if got["author"] != "acme-dev3" {
 		t.Fatalf("author = %v, want it kept", got["author"])
 	}
-	if infos := list(po["infos"]); len(infos) != 1 {
-		t.Fatalf("infos = %d, want the event still shown", len(infos))
+	if got := len(list(h.mustDo("GET", "/v1/state", nil, http.StatusOK)["infos"])); got != 1 {
+		t.Fatalf("the event is gone from the manager's board too: %d", got)
 	}
 }
 

@@ -533,9 +533,10 @@ paths:
       operationId: getPOView
       summary: What the PO's page reads
       description: |
-        `for_you` **never** contains an `info`, even one addressed to the PO on
-        purpose: it moves to `infos`. Text scrolling while the PO reads is the
-        defect this tool exists to remove.
+        An `info` reaches none of this. It is published so that nobody has to
+        read it now, and the PO has nothing to do with it — the manager reads
+        them on the board and clears them with `POST /v1/ack`. One addressed to
+        the PO on purpose is dropped here all the same.
 
         `recent` lists what the PO just answered and can still take back, with
         the window in seconds, so reloading the page does not cost that chance.
@@ -980,10 +981,6 @@ components:
           type: array
           description: Everything addressed to the PO, and nothing else. Never an `info`.
           items: { $ref: "#/components/schemas/Event" }
-        infos:
-          type: array
-          description: The folded-away zone; never in the flow.
-          items: { $ref: "#/components/schemas/Event" }
         recent:
           type: array
           description: Just answered by the PO, still within the undo window.
@@ -991,7 +988,7 @@ components:
         undo_window:
           type: integer
           description: How long an answer can be taken back, in seconds.
-      required: [sessions, for_you, infos, recent, undo_window]
+      required: [sessions, for_you, recent, undo_window]
 
     WakeResponse:
       type: object
