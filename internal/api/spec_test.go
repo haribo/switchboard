@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"switchboard/internal/store"
 )
 
 // The specification and the router must describe the same service. Checked in
@@ -99,8 +101,8 @@ func TestTheSpecificationEnumsMatchWhatIsAccepted(t *testing.T) {
 		"Audience":      {"manager", "po"},
 		"Role":          {"dev", "manager", "po"},
 		"EventState":    {"open", "answered", "done", "withdrawn"},
-		"SessionStatus": {"active", "waiting", "idle"},
-		"TableState":    {RowBlocked, RowOnYou, RowWorking, RowIdle},
+		"SessionStatus": {store.StatusActive, store.StatusIdle},
+		"TableState":    {RowBlocked, RowOnYou, RowOnPeer, RowWorking, RowIdle},
 	} {
 		got := parsed.Components.Schemas[name].Enum
 		if len(got) != len(want) {

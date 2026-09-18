@@ -20,12 +20,33 @@ name is worse than no icon.
 |---|---|---|
 | `block` | blocked | an open `blocked` event from that session |
 | `back_hand` | waiting on you | an open ask sitting with the PO |
+| `hourglass_top` | waiting on another session | a dependency it declared, still standing |
 | `autorenew` | working | anything else while the session is active |
 | `pause_circle` | idle | the session declared itself idle |
 
-The first two are **worked out by the service**, not declared. A session already
-says what it published; asking it to also keep a status in sync would add a field
-that can go stale. Derivation cannot go stale.
+The first three are **worked out by the service**, not declared. A session
+already says what it published; asking it to also keep a status in sync would add
+a field that can go stale. Derivation cannot go stale.
+
+Waiting on the PO is not the only way to be stopped. A session paused on another
+session's work names it — the session, and the issue it is paused on — and the
+table derives the state from whether that pause still stands:
+
+```
+acme-dev4   ⧗   #1826   waiting on acme-dev2 #1889 — step 2 cannot start
+```
+
+**It lifts itself.** The moment `acme-dev2` stops declaring #1889 — it moved on,
+or retired — the row is working again, with nothing to clear by hand, exactly as
+*waiting on you* lifts when the PO answers.
+
+A session cannot declare itself stopped with nothing to point at: `waiting_on`
+and `waiting_for` go together, and one without the other is refused. A freely
+declared "I am blocked" would be the same lie in the other direction — forgotten
+once, it holds all day.
+
+The mark is grey, not amber. Amber on this page means *you*; a session paused on
+a peer needs nothing from the PO.
 
 **An issue shows as `#1886`, and links to the address it came from.** The number
 is the URL's last segment, and only when that segment really is a number: an

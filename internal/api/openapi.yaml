@@ -682,17 +682,24 @@ components:
 
     SessionStatus:
       type: string
-      description: What a session declares about itself.
-      enum: [active, waiting, idle]
+      description: |
+        What a session declares about itself. Being stopped is **not** among
+        them: whether a session is waiting is derived — from an open ask sitting
+        with the PO, from an open `blocked`, or from a dependency it declared on
+        another session — never from a flag it sets itself. A flag can be
+        forgotten; a derivation cannot go stale.
+      enum: [active, idle]
 
     TableState:
       type: string
       description: |
-        What the PO's table shows. Two of the four are worked out by the service
-        rather than declared: a session with an open `blocked` is `blocked`, and
-        one with an open ask sitting with the PO is `waiting_on_you`. A status
+        What the PO's table shows. Three of the five are worked out by the
+        service rather than declared: `blocked` from an open `blocked` event,
+        `waiting_on_you` from an open ask sitting with the PO, and
+        `waiting_on_peer` from a dependency the session declared on another
+        session — which lifts by itself when that session moves on. A status
         nobody has to refresh cannot go stale.
-      enum: [blocked, waiting_on_you, working, idle]
+      enum: [blocked, waiting_on_you, waiting_on_peer, working, idle]
 
     Issue:
       type: string
@@ -719,6 +726,15 @@ components:
         detail:
           type: string
           description: "One short line: what is happening. Shown in the PO's table, clipped to one line."
+        waiting_on:
+          type: string
+          description: |
+            The session whose work this one is paused on. Goes together with
+            `waiting_for`: neither alone is accepted, because a pause with
+            nothing to point at could never lift itself.
+          examples: ["acme-dev2"]
+        waiting_for:
+          $ref: "#/components/schemas/Issue"
           examples: ["action bar, label of the primary button"]
 
     Session:
@@ -728,6 +744,17 @@ components:
         status: { $ref: "#/components/schemas/SessionStatus" }
         issue: { $ref: "#/components/schemas/Issue" }
         detail: { type: string }
+        waiting_on:
+          type: string
+          description: |
+            The session this one is paused on — present **only while the pause
+            holds**, so a reader is never shown a dependency that has lifted.
+        waiting_for_label:
+          type: string
+          examples: ["#1889"]
+        waiting_for_url:
+          type: string
+          format: uri
         since_at:
           type: string
           format: date-time
@@ -754,6 +781,17 @@ components:
           format: uri
           description: Absent when it could not be resolved; the page then shows the label as plain text.
         detail: { type: string }
+        waiting_on:
+          type: string
+          description: |
+            The session this one is paused on — present **only while the pause
+            holds**, so a reader is never shown a dependency that has lifted.
+        waiting_for_label:
+          type: string
+          examples: ["#1889"]
+        waiting_for_url:
+          type: string
+          format: uri
         since_at:
           type: string
           format: date-time

@@ -264,7 +264,9 @@ func checkIssue(issue string) error {
 func state(args []string) error {
 	fs, server := flags("state")
 	session := fs.String("session", "", "session name (required)")
-	status := fs.String("status", store.StatusActive, "active, waiting or idle")
+	status := fs.String("status", store.StatusActive, "active or idle")
+	waitingOn := fs.String("waiting-on", "", "the session whose work this one is paused on")
+	waitingFor := fs.String("waiting-for", "", "the issue it is paused on, as its full URL")
 	issue := fs.String("issue", "", "the issue being worked on, as its full URL")
 	detail := fs.String("detail", "", "one short line: what is happening")
 	if err := parseNoArgs(fs, args); err != nil {
@@ -276,12 +278,24 @@ func state(args []string) error {
 	if err := checkIssue(*issue); err != nil {
 		return err
 	}
-	var out store.Session
-	if _, err := newClient(*server).call(http.MethodPut, "/v1/sessions/"+*session,
-		map[string]string{"status": *status, "issue": *issue, "detail": *detail}, &out); err != nil {
+	if err := checkIssue(*waitingFor); err != nil {
 		return err
 	}
-	fmt.Printf("%s: %s%s\n", out.Name, out.Status, issueSuffix(out.Issue))
+	var out store.Session
+	if _, err := newClient(*server).call(http.MethodPut, "/v1/sessions/"+*session,
+		map[string]string{
+			"status": *status, "issue": *issue, "detail": *detail,
+			"waiting_on": *waitingOn, "waiting_for": *waitingFor,
+		}, &out); err != nil {
+		return err
+	}
+	// Say the pause back, so the caller sees what was recorded rather than what
+	// it meant — the defect this replaced was a status echoed but not applied.
+	pause := ""
+	if out.WaitingOn != "" {
+		pause = fmt.Sprintf(", paused on %s %s", out.WaitingOn, issueref.Label(out.WaitingFor))
+	}
+	fmt.Printf("%s: %s%s%s\n", out.Name, out.Status, issueSuffix(out.Issue), pause)
 	return nil
 }
 
@@ -451,8 +465,12 @@ func printBoard(w io.Writer, st api.StateResponse) {
 	for _, s := range sorted {
 		// The state is the derived one the page shows, so the board and the
 		// page cannot disagree — it already says when a session waits on the PO.
-		line := fmt.Sprintf("  %-14s %-14s %-8s %s",
-			s.Name, s.State, orDash(s.IssueLabel), age(s.SinceAt))
+		state := s.State
+		if s.WaitingOn != "" {
+			state += " " + s.WaitingOn
+		}
+		line := fmt.Sprintf("  %-14s %-24s %-8s %s",
+			s.Name, state, orDash(s.IssueLabel), age(s.SinceAt))
 		fmt.Fprintln(w, strings.TrimRight(line+quietNote(s.Quiet, s.UpdatedAt), " "))
 	}
 

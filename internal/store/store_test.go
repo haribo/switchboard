@@ -190,7 +190,7 @@ func TestRerouteHandsAQuestionToThePO(t *testing.T) {
 // A session can die and come back; what it published must not die with it.
 func TestEverythingSurvivesARestart(t *testing.T) {
 	s, now, path := testStore(t)
-	s.SaveSession("acme-dev1", StatusWaiting, "142", "waiting on the PO")
+	s.SaveSession("acme-dev1", StatusActive, "142", "waiting on the PO")
 	e, _ := s.AddEvent(Event{Author: "acme-dev1", Kind: KindQuestion, Title: "Which date format?"})
 	s.SetCursor(AudienceManager, base, base)
 	s.Close()
@@ -202,7 +202,7 @@ func TestEverythingSurvivesARestart(t *testing.T) {
 	defer reopened.Close()
 
 	sessions, _ := reopened.Sessions()
-	if len(sessions) != 1 || sessions[0].Status != StatusWaiting {
+	if len(sessions) != 1 || sessions[0].Status != StatusActive {
 		t.Fatalf("sessions = %+v, want the waiting dev", sessions)
 	}
 	got, err := reopened.Event(e.ID)
@@ -459,7 +459,7 @@ func TestARetiredSessionsEventsSurvive(t *testing.T) {
 // author no longer exists.
 func TestASessionWithOpenAsksCannotBeRetired(t *testing.T) {
 	s, _, _ := testStore(t)
-	s.SaveSession("acme-dev3", StatusWaiting, "150", "")
+	s.SaveSession("acme-dev3", StatusActive, "150", "")
 	e, _ := s.AddEvent(Event{Author: "acme-dev3", Kind: KindQuestion, Audience: AudiencePO, Title: "Tab or modal?"})
 
 	err := s.RetireSession("acme-dev3")
