@@ -55,6 +55,7 @@ execute without asking questions:
 - **Decisions already taken** (no "TBD" unless truly open)
 - **Explicit mappings** for refactors (current → target, per artifact)
 - **Validation criteria** (grep patterns, file lists, test names)
+- **PR strategy** when the issue spans several tasks: one PR or several, and why
 - **Out of scope**, to prevent scope creep
 
 Trivial issues (typos, one-line config) are exempt. The test: if the implementer
