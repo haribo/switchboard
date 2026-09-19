@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/yuin/goldmark v1.8.6
 	modernc.org/sqlite v1.59.0
 	sigs.k8s.io/yaml v1.6.0
 )

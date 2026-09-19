@@ -840,12 +840,14 @@ components:
         body:
           type: string
           description: |
-            The detail, read once the PO has decided to take this one. HTML from
-            a short whitelist — `p`, `br`, `strong`, `b`, `em`, `i`, `code`,
-            `ul`, `ol`, `li`, and `a` with an `http`, `https` or `mailto` href.
-            Anything else survives as text rather than being run. Sanitized on
-            the way in; what comes back is what will be rendered.
-          examples: ['<p>It has said <code>Save</code> from the start. The <a href="https://github.com/acme/app/issues/142">mockup</a> says "Confirm".</p>']
+            The detail, read once the PO has decided to take this one. Written
+            as **Markdown**: a blank line starts a paragraph, a single newline
+            breaks the line. It is rendered, then held to a short whitelist —
+            `p`, `br`, `strong`, `b`, `em`, `i`, `code`, `pre`, `ul`, `ol`,
+            `li`, and `a` with an `http`, `https` or `mailto` href. Anything
+            else survives as text rather than being run, so HTML written by hand
+            still works. What comes back is the rendered, sanitized form.
+          examples: ['It has said `Save` from the start. The [mockup](https://github.com/acme/app/issues/142) says "Confirm".']
         link:
           type: string
           format: uri
@@ -868,7 +870,10 @@ components:
         title: { type: string }
         body:
           type: string
-          description: Sanitized HTML, safe to render. Never what a session sent verbatim.
+          description: |
+            The rendered, sanitized HTML, safe to render as it stands. Never what
+            a session sent verbatim.
+          examples: ['<p>It has said <code>Save</code> from the start.</p>']
         link: { type: string, format: uri }
         issue: { $ref: "#/components/schemas/Issue" }
         issue_label: { type: string }
@@ -891,8 +896,8 @@ components:
         explanation:
           type: string
           description: |
-            The plain-words version, sanitized HTML. Sits beside the original
-            wording, never in place of it.
+            The plain-words version, rendered and sanitized like any other body.
+            Sits beside the original wording, never in place of it.
         reply: { $ref: "#/components/schemas/Reply" }
       required: [id, author, role, kind, title, audience, state, created_at]
 

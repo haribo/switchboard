@@ -1,8 +1,11 @@
-# ADR-0004: a description is HTML, from a short whitelist
+# ADR-0004: a description takes a short whitelist of tags
 
 ## Status
 
-Accepted.
+Accepted. The input format is superseded by [ADR-0007](0007-descriptions-are-written-in-markdown.md):
+a description is written in Markdown and rendered before it reaches this
+whitelist. Why the whitelist exists, and what it is for, is unchanged;
+ADR-0007 adds `pre` to the list it draws up below.
 
 ## Context
 
