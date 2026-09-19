@@ -76,7 +76,7 @@ switchboard event --from acme-dev3 --kind info --title "e2e gate started, about 
 # a call I cannot make alone — and I wait for it
 id=$(switchboard event --from acme-dev3 --kind question --issue 142 \
        --title "Label of the primary button in the action bar" \
-       --body '<p>It has said <code>Save</code> from the start. The <a href="…">mockup</a> says "Confirm".</p>' \
+       --body 'It has said `Save` from the start. The [mockup](…) says "Confirm".' \
        --option Save --option Confirm)
 switchboard state --session acme-dev3 --status waiting --issue 142
 switchboard await "$id" --timeout 2h
@@ -97,7 +97,7 @@ switchboard retire acme-dev3
 
 ```bash
 # the PO could not act on how I worded it — say it again, plainly
-switchboard explain "$id" --as acme-dev3 --body "<p>Which way the export fetches page 2.</p>"
+switchboard explain "$id" --as acme-dev3 --body "Which way the export fetches page 2."
 ```
 
 `await` stops on three outcomes, and exits differently for each so a session can
@@ -108,13 +108,19 @@ the PO asked for it to be put in plain words — reword it and await again.
 
 **Title and body** split two readings: the title is what the PO skims to decide
 whether to take this one now, the body is what they read once they have. A title
-is one line, 120 characters at most. A body may carry links, bold, italic,
-`code`, lists and paragraphs; anything else shows as plain text.
+is one line, 120 characters at most.
+
+**A body is Markdown** — write it the way you write an issue comment. A blank
+line starts a paragraph, a single newline breaks the line, and links, bold,
+italic, `code`, fenced blocks and lists all arrive as themselves. What the page
+has no room for shows as the text it is, so nothing is ever silently emptied.
+HTML written by hand still works, held to the same short list of tags.
 
 ## For the manager
 
 ```bash
-switchboard board              # everything, in one call
+switchboard board              # everything, in one call — titles, not bodies
+switchboard board --json       # the same, with the bodies
 switchboard reply 12 --text "ISO 8601, always"
 switchboard ask --title "Do we start phase 2 on Thursday?" --option "Phase 2" --option "Debt first"
 switchboard ask --forward 12   # hand a dev's question to the PO

@@ -51,8 +51,10 @@ One rule per line where possible.
   issue arrives as its full URL or not at all — resolving a bare number would
   mean naming another repository, and would link to the wrong issue the moment a
   session works somewhere else
-- A description is never stored or rendered unsanitized — `richtext.Clean` on the
-  way in, see `docs/adr/0004-descriptions-take-a-whitelist.md`
+- A description is Markdown, rendered then sanitized, in that order —
+  `richtext.Clean` on the way in, see `docs/adr/0004-descriptions-take-a-whitelist.md`
+  and `docs/adr/0007-descriptions-are-written-in-markdown.md`. Sanitizing is the
+  last step: anything inserted after it reaches the PO's page unchecked
 
 ## Input rules
 

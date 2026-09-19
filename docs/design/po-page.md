@@ -102,7 +102,8 @@ What is addressed to the PO, and nothing else. Each ask carries:
   tag because an ask from the manager is not decided like an ask from a dev. When
   the name would merely repeat the role, only the tag shows.
 - **a title**, one line, what the PO skims to decide whether to take this now;
-- **a description**, sanitized HTML, what they read once they have;
+- **a description**, what they read once they have. It is written as Markdown
+  and sanitized on the way in, so the page renders it as it stands;
 - **the offered options**, as buttons;
 - **a free text field**, for everything the options did not foresee.
 
