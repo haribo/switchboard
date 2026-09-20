@@ -58,6 +58,17 @@ type Session struct {
 	WaitingOn  string    `json:"waiting_on,omitempty"`
 	WaitingFor string    `json:"waiting_for,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"` // last sign of life
+
+	// What somebody else saw of this session, and when — see ADR-0008. It sits
+	// beside the declaration and never replaces it: an observer can be wrong,
+	// and a session on one long foreground command is idle by every outside
+	// measure while genuinely working. Recording one is not a sign of life, so
+	// it leaves UpdatedAt and SinceAt alone.
+	ObservedStatus string `json:"observed_status,omitempty"`
+	ObservedBy     string `json:"observed_by,omitempty"`
+	// Nil until somebody has looked: a zero time serializes as year one, which
+	// reads as a date rather than as "never".
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
 }
 
 // Event is one typed message published without interrupting anybody.

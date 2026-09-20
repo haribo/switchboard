@@ -581,3 +581,146 @@ func TestPublishingTheExplanationClearsIt(t *testing.T) {
 		t.Fatalf("pending = %d after publishing, want none — a second signal would follow", len(items))
 	}
 }
+
+// --- observations (#49) -----------------------------------------------------
+
+// The whole point: the row carries both readings, and neither hides the other.
+func TestAnObservationSitsBesideTheDeclaration(t *testing.T) {
+	s, now, _ := testStore(t)
+	if _, err := s.SaveSession("acme-dev3", StatusActive, "", "writing the migration"); err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	*now = base.Add(4 * time.Minute)
+
+	got, err := s.Observe("acme-dev3", StatusIdle, "acme-manager")
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if got.Status != StatusActive {
+		t.Fatalf("declaration = %q, want it untouched at %q", got.Status, StatusActive)
+	}
+	if got.ObservedStatus != StatusIdle || got.ObservedBy != "acme-manager" {
+		t.Fatalf("observation = %q by %q, want idle by acme-manager", got.ObservedStatus, got.ObservedBy)
+	}
+	if got.ObservedAt == nil || !got.ObservedAt.Equal(base.Add(4*time.Minute)) {
+		t.Fatalf("observed at %v, want %v", got.ObservedAt, base.Add(4*time.Minute))
+	}
+	// And the table the page reads carries it too.
+	list, err := s.Sessions()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("sessions = %+v (%v)", list, err)
+	}
+	if list[0].ObservedStatus != StatusIdle || list[0].ObservedBy != "acme-manager" {
+		t.Fatalf("listed observation = %q by %q", list[0].ObservedStatus, list[0].ObservedBy)
+	}
+}
+
+// An observation is not the observed session speaking. If it refreshed the
+// silence clock it would erase exactly what it reports on.
+func TestObservingIsNotASignOfLife(t *testing.T) {
+	s, now, _ := testStore(t)
+	declared, err := s.SaveSession("acme-dev3", StatusActive, "", "on it")
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	*now = base.Add(2 * time.Hour)
+
+	got, err := s.Observe("acme-dev3", StatusIdle, "acme-manager")
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if !got.UpdatedAt.Equal(declared.UpdatedAt) {
+		t.Fatalf("updated_at = %v, want it left at %v", got.UpdatedAt, declared.UpdatedAt)
+	}
+	if !got.SinceAt.Equal(declared.SinceAt) {
+		t.Fatalf("since_at = %v, want it left at %v", got.SinceAt, declared.SinceAt)
+	}
+}
+
+// Declaring says nothing about what somebody else saw, so it must not wipe it.
+func TestDeclaringLeavesAnObservationAlone(t *testing.T) {
+	s, now, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusActive, "", "on it")
+	*now = base.Add(time.Minute)
+	if _, err := s.Observe("acme-dev3", StatusIdle, "acme-manager"); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+
+	*now = base.Add(2 * time.Minute)
+	got, err := s.SaveSession("acme-dev3", StatusActive, "", "still on it")
+	if err != nil {
+		t.Fatalf("declare again: %v", err)
+	}
+	if got.ObservedStatus != StatusIdle || got.ObservedBy != "acme-manager" {
+		t.Fatalf("observation after a declaration = %q by %q, want it kept",
+			got.ObservedStatus, got.ObservedBy)
+	}
+	if got.ObservedAt == nil || !got.ObservedAt.Equal(base.Add(time.Minute)) {
+		t.Fatalf("observed_at = %v, want it left at %v", got.ObservedAt, base.Add(time.Minute))
+	}
+}
+
+// Only the latest reading is kept: a second look at the same session says the
+// same kind of thing, and a history buys a question nobody has asked.
+func TestTheLatestObservationWins(t *testing.T) {
+	s, now, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusActive, "", "on it")
+	if _, err := s.Observe("acme-dev3", StatusIdle, "acme-manager"); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	*now = base.Add(5 * time.Minute)
+	got, err := s.Observe("acme-dev3", StatusActive, "acme-dev1")
+	if err != nil {
+		t.Fatalf("observe again: %v", err)
+	}
+	if got.ObservedStatus != StatusActive || got.ObservedBy != "acme-dev1" {
+		t.Fatalf("observation = %q by %q, want active by acme-dev1", got.ObservedStatus, got.ObservedBy)
+	}
+	if got.ObservedAt == nil || !got.ObservedAt.Equal(base.Add(5*time.Minute)) {
+		t.Fatalf("observed_at = %v, want the second reading's", got.ObservedAt)
+	}
+}
+
+// Declaring is what a session does about itself. Accepting this would make the
+// observation a second declaration channel — ADR-0008 rules that out.
+func TestASessionCannotObserveItself(t *testing.T) {
+	s, _, _ := testStore(t)
+	s.SaveSession("acme-dev3", StatusActive, "", "on it")
+	if _, err := s.Observe("acme-dev3", StatusIdle, "acme-dev3"); !errors.Is(err, ErrSelfObservation) {
+		t.Fatalf("err = %v, want ErrSelfObservation", err)
+	}
+	got, err := s.Session("acme-dev3")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got.ObservedStatus != "" {
+		t.Fatalf("observation = %q, want nothing recorded", got.ObservedStatus)
+	}
+}
+
+// There is no row to show it on, and inventing one would put a session on the
+// PO's table that never declared anything.
+func TestObservingAnUnknownSessionIsRefused(t *testing.T) {
+	s, _, _ := testStore(t)
+	if _, err := s.Observe("acme-dev9", StatusIdle, "acme-manager"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	list, err := s.Sessions()
+	if err != nil || len(list) != 0 {
+		t.Fatalf("sessions = %+v (%v), want none created", list, err)
+	}
+}
+
+// Never observed is the zero time, not the epoch: a reader can tell the two
+// apart without knowing the column's default.
+func TestASessionNeverObservedCarriesNoTime(t *testing.T) {
+	s, _, _ := testStore(t)
+	got, err := s.SaveSession("acme-dev3", StatusActive, "", "on it")
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if got.ObservedAt != nil || got.ObservedStatus != "" || got.ObservedBy != "" {
+		t.Fatalf("a session nobody looked at carries %q by %q at %v",
+			got.ObservedStatus, got.ObservedBy, got.ObservedAt)
+	}
+}

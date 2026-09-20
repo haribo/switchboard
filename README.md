@@ -121,6 +121,7 @@ HTML written by hand still works, held to the same short list of tags.
 ```bash
 switchboard board              # everything, in one call — titles, not bodies
 switchboard board --json       # the same, with the bodies
+switchboard observed acme-dev3 --status idle --as acme-manager   # what I saw of it
 switchboard reply 12 --text "ISO 8601, always"
 switchboard ask --title "Do we start phase 2 on Thursday?" --option "Phase 2" --option "Debt first"
 switchboard ask --forward 12   # hand a dev's question to the PO
@@ -128,6 +129,28 @@ switchboard ack                # "read": the info and the PO's answers
 switchboard undo 12 --as manager
 switchboard withdraw 12 --as manager   # close an ask that no longer needs an answer
 ```
+
+### Saying what you saw of somebody else
+
+A session declares where it is, and cannot declare that it has **stopped**: the
+last thing a stopped session said was `active`, and its row goes on saying it.
+The service only sees silence, which is not evidence — a session on one long
+foreground command is silent and working.
+
+Whoever can see more reports it:
+
+```bash
+switchboard observed acme-dev3 --status idle --as acme-manager
+```
+
+The row then carries **both** readings — what the session declares, and what you
+saw — and the disagreement is the finding. Yours does not win: an observer can be
+wrong, and replacing the declaration would trade one blind spot for another.
+
+It expires after ten minutes (`--observation-valid-for`), it is not a sign of
+life from the session it names, and it changes nothing: nobody is woken, no row
+is retired. See
+[ADR-0008](docs/adr/0008-an-observation-sits-beside-the-declaration.md).
 
 ### The grouped signal
 

@@ -74,9 +74,39 @@ for a session that declared once and then stopped, the two numbers are the same
 instant written twice: `1h27` beside `quiet 1h26` reads as a second fact and is
 not one.
 
+**What somebody else saw is a different matter.** A session declares where it is,
+and cannot declare that it has stopped: the last thing a stopped session said was
+`active`, and the row goes on saying it. Another party — the manager, whose host
+knows which of its sessions are running — can see what the service never will, so
+it reports it: *"I saw `acme-dev3` idle at 10:38."* See
+[ADR-0008](../adr/0008-an-observation-sits-beside-the-declaration.md).
+
+The row then carries both readings, and **the disagreement is the finding**:
+
+```
+acme-dev3   ⏵ ⚠   #1979   PR #2009 opened, eight checks green      4 min
+                          ↳ acme-manager saw it idle 3 min ago
+```
+
+The declaration is untouched — an observer can be wrong, and a session on one
+long foreground command is idle by every outside measure while genuinely working.
+Replacing the declaration would trade one blind spot for another; showing the two
+side by side is what makes the row honest.
+
+**It appears only on a row that claims progress**, one reading *working*.
+*Blocked*, *waiting on you* and *waiting on another session* already say nothing
+is advancing, and an observation of idleness there is true and pointless.
+
+**It expires**, ten minutes by default. An observation says something about
+*now*; past its validity the service stops sending it rather than let the page
+show an old reading as a current one — which is the same defect one level up.
+
 **"What's happening" stays on one line**, clipped with an ellipsis, with the full
 text in the title attribute. Every row keeps the same height, so the table stays
-scannable however long a session's note runs.
+scannable however long a session's note runs — the row carrying a live
+observation is the one exception, and takes a second line. The thing that needs
+attention is the thing allowed to take room, and a fleet with nothing to report
+has no such row.
 
 **A row can leave.** A session is retired with `DELETE /v1/sessions/{name}`,
 which is what keeps the table short: a typo (`--session dev33`) would otherwise

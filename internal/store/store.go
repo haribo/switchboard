@@ -130,8 +130,14 @@ func (s *Store) SaveSessionWaiting(name, status, issue, detail, waitingOn, waiti
 	now := s.now()
 	var prevStatus, prevIssue string
 	var since int64
-	err := s.db.QueryRow(`SELECT status, issue, since_at FROM sessions WHERE name = ?`, name).
-		Scan(&prevStatus, &prevIssue, &since)
+	// The observation is read back so the answer carries it: a declaration
+	// neither sets nor clears what somebody else saw.
+	var seen Session
+	var seenAt int64
+	err := s.db.QueryRow(
+		`SELECT status, issue, since_at, observed_status, observed_by, observed_at
+		 FROM sessions WHERE name = ?`, name).
+		Scan(&prevStatus, &prevIssue, &since, &seen.ObservedStatus, &seen.ObservedBy, &seenAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		since = ms(now)
@@ -157,13 +163,83 @@ func (s *Store) SaveSessionWaiting(name, status, issue, detail, waitingOn, waiti
 		Name: name, Status: status, Issue: issue, Detail: detail,
 		SinceAt: at(since), UpdatedAt: now,
 		WaitingOn: waitingOn, WaitingFor: waitingFor,
+		ObservedStatus: seen.ObservedStatus, ObservedBy: seen.ObservedBy,
+		ObservedAt: observedTime(seenAt),
 	}, nil
+}
+
+// ErrSelfObservation is returned when a session reports on itself. Declaring is
+// what a session does about itself — `PUT /v1/sessions/{name}` — and an
+// observation channel that accepted it would be a second declaration channel,
+// which ADR-0008 rules out.
+var ErrSelfObservation = errors.New("a session cannot observe itself")
+
+// Observe records what by saw of the session called name.
+//
+// It writes nowhere near the declaration: status, issue, detail, since_at and
+// updated_at are left exactly as the session left them. updated_at especially —
+// it is the observed session's last sign of life, and an observation that
+// refreshed it would erase the silence it is reporting on.
+//
+// The session has to exist. There is no row to show the observation on
+// otherwise, and inventing one would put a session on the PO's table that never
+// declared anything.
+func (s *Store) Observe(name, status, by string) (Session, error) {
+	if name == by {
+		return Session{}, ErrSelfObservation
+	}
+	now := s.now()
+	res, err := s.db.Exec(
+		`UPDATE sessions SET observed_status = ?, observed_by = ?, observed_at = ? WHERE name = ?`,
+		status, by, ms(now), name)
+	if err != nil {
+		return Session{}, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return Session{}, err
+	} else if n == 0 {
+		return Session{}, ErrNotFound
+	}
+	s.notify()
+	return s.Session(name)
+}
+
+// Session reads one session's row.
+func (s *Store) Session(name string) (Session, error) {
+	var v Session
+	var since, updated, observed int64
+	err := s.db.QueryRow(
+		`SELECT name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for,
+		        observed_status, observed_by, observed_at
+		 FROM sessions WHERE name = ?`, name).
+		Scan(&v.Name, &v.Status, &v.Issue, &v.Detail, &since, &updated,
+			&v.WaitingOn, &v.WaitingFor, &v.ObservedStatus, &v.ObservedBy, &observed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	v.SinceAt, v.UpdatedAt = at(since), at(updated)
+	v.ObservedAt = observedTime(observed)
+	return v, nil
+}
+
+// observedTime keeps "never observed" as nothing at all rather than as the
+// epoch — or as year one, which a reader would take for a date.
+func observedTime(ms int64) *time.Time {
+	if ms == 0 {
+		return nil
+	}
+	t := at(ms)
+	return &t
 }
 
 // Sessions lists every known session, by name.
 func (s *Store) Sessions() ([]Session, error) {
 	rows, err := s.db.Query(
-		`SELECT name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for
+		`SELECT name, status, issue, detail, since_at, updated_at, waiting_on, waiting_for,
+		        observed_status, observed_by, observed_at
 		 FROM sessions ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -172,12 +248,13 @@ func (s *Store) Sessions() ([]Session, error) {
 	out := []Session{}
 	for rows.Next() {
 		var v Session
-		var since, updated int64
+		var since, updated, observed int64
 		if err := rows.Scan(&v.Name, &v.Status, &v.Issue, &v.Detail, &since, &updated,
-			&v.WaitingOn, &v.WaitingFor); err != nil {
+			&v.WaitingOn, &v.WaitingFor, &v.ObservedStatus, &v.ObservedBy, &observed); err != nil {
 			return nil, err
 		}
 		v.SinceAt, v.UpdatedAt = at(since), at(updated)
+		v.ObservedAt = observedTime(observed)
 		out = append(out, v)
 	}
 	return out, rows.Err()

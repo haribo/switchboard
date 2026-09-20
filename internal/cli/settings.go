@@ -11,13 +11,14 @@ import (
 // setting the product has since dropped — and the operator needs to be told
 // which, because one is deleted and the other is hunted for.
 var knownSettings = map[string]bool{
-	"SWITCHBOARD_ADDR":         true,
-	"SWITCHBOARD_DB":           true,
-	"SWITCHBOARD_DEBOUNCE":     true,
-	"SWITCHBOARD_MIN_INTERVAL": true,
-	"SWITCHBOARD_URGENT":       true,
-	"SWITCHBOARD_UNDO_WINDOW":  true,
-	"SWITCHBOARD_QUIET_AFTER":  true,
+	"SWITCHBOARD_ADDR":                  true,
+	"SWITCHBOARD_DB":                    true,
+	"SWITCHBOARD_DEBOUNCE":              true,
+	"SWITCHBOARD_MIN_INTERVAL":          true,
+	"SWITCHBOARD_URGENT":                true,
+	"SWITCHBOARD_UNDO_WINDOW":           true,
+	"SWITCHBOARD_QUIET_AFTER":           true,
+	"SWITCHBOARD_OBSERVATION_VALID_FOR": true,
 	// Read by the client, not the server, but it legitimately sits in the same
 	// environment — naming it as unknown would send the operator after nothing.
 	"SWITCHBOARD_URL": true,

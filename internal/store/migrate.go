@@ -118,6 +118,19 @@ var migrations = []migration{
 			`ALTER TABLE events ADD COLUMN explain_asked_at INTEGER`,
 		},
 	},
+	{
+		version: 6,
+		name:    "let a caller report what it observed of a session",
+		stmts: []string{
+			// What somebody else saw of this session, kept beside what the
+			// session declares and never merged into it. Attributed, because an
+			// observer can be wrong; timestamped, because an observation says
+			// something about now and stops saying it soon after.
+			`ALTER TABLE sessions ADD COLUMN observed_status TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN observed_by TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN observed_at INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // SchemaTarget is the schema version this binary expects.

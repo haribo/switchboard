@@ -37,6 +37,11 @@ type Config struct {
 	// arrived, and cannot know why. A session may be working on one long task,
 	// or gone.
 	QuietAfter time.Duration
+	// ObservationValidFor is how long what somebody saw of a session is still
+	// worth showing. An observation says something about now; past this the
+	// service stops sending it, rather than let a reader date an old reading
+	// themselves — see ADR-0008.
+	ObservationValidFor time.Duration
 }
 
 // IssueURL is the address of an issue, or "" when there is none to give.
@@ -102,13 +107,26 @@ type SessionRow struct {
 	// dead: the service cannot observe that, and must not display a distinction
 	// it has no means of observing.
 	Quiet bool `json:"quiet,omitempty"`
+	// Observed is what somebody else saw of this session, with who saw it and
+	// when — carried only while it is still within its validity, so a reader
+	// never has to date it. It never replaces the declaration above.
+	Observed   string     `json:"observed,omitempty"`
+	ObservedBy string     `json:"observed_by,omitempty"`
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
+	// ObservedContradicts is the service's decision that this row needs to say
+	// so: the observation is live, it disagrees with what the session declared,
+	// and the row claims progress. A row already saying that nothing is
+	// advancing — blocked, waiting on you, waiting on a peer — is not
+	// contradicted by somebody seeing it idle.
+	ObservedContradicts bool `json:"observed_contradicts,omitempty"`
 }
 
 // DefaultConfig is the shipped behaviour.
 var DefaultConfig = Config{
-	Wake:       wake.Default,
-	UndoWindow: 10 * time.Second,
-	QuietAfter: 30 * time.Minute,
+	Wake:                wake.Default,
+	UndoWindow:          10 * time.Second,
+	QuietAfter:          30 * time.Minute,
+	ObservationValidFor: 10 * time.Minute,
 }
 
 // Server routes the HTTP surface.
@@ -209,6 +227,7 @@ func (s *Server) table() []route {
 
 		{http.MethodPut, "/v1/sessions/{name}", s.putSession},
 		{http.MethodDelete, "/v1/sessions/{name}", s.retireSession},
+		{http.MethodPost, "/v1/sessions/{name}/observation", s.observeSession},
 
 		// The manager's side.
 		{http.MethodGet, "/v1/state", s.state},
@@ -389,6 +408,72 @@ func (s *Server) putSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, sess)
+}
+
+// observationRequest is what a caller reports about somebody else.
+type observationRequest struct {
+	Status string `json:"status"`
+	By     string `json:"by"`
+}
+
+// observeSession records what a caller saw of another session — see ADR-0008.
+//
+// It is deliberately a route of its own rather than a field on the declaration:
+// what a session says about itself and what somebody says about it are two
+// different claims, from two different parties, and one call carrying both would
+// let an observer overwrite a declaration by accident.
+func (s *Server) observeSession(w http.ResponseWriter, r *http.Request) {
+	// Not validSessionName, for the same reason retiring is not: a row that
+	// exists can be reported on, whatever it is called. A name that matches
+	// nothing is answered by the store, with 404.
+	name := r.PathValue("name")
+	if name == "" {
+		fail(w, http.StatusBadRequest, "a session name is required")
+		return
+	}
+	var req observationRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.By = strings.TrimSpace(req.By)
+	if !store.ValidStatus(req.Status) {
+		fail(w, http.StatusBadRequest, "status must be active or idle")
+		return
+	}
+	// The observer is named on the PO's page, so it is held to the shape of a
+	// session name — an observation nobody can be traced to is worth nothing.
+	if err := validSessionName(req.By); err != nil {
+		fail(w, http.StatusBadRequest, "by: "+err.Error())
+		return
+	}
+
+	sess, err := s.st.Observe(name, req.Status, req.By)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "no such session — a session is reported on once it has declared itself")
+		return
+	case errors.Is(err, store.ErrSelfObservation):
+		fail(w, http.StatusBadRequest,
+			"a session cannot observe itself — use PUT /v1/sessions/{name} to declare where you are")
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write(w, http.StatusOK, sess)
+}
+
+// live reports whether an observation is still worth showing. Zero validity
+// keeps one for good, which is what a test driving its own clock wants and what
+// nobody running the service should choose.
+func (s *Server) live(sess store.Session) bool {
+	if sess.ObservedStatus == "" || sess.ObservedAt == nil {
+		return false
+	}
+	if s.cfg.ObservationValidFor <= 0 {
+		return true
+	}
+	return s.st.Now().Sub(*sess.ObservedAt) <= s.cfg.ObservationValidFor
 }
 
 // retireSession removes a session's row. Its events stay — they are the trace of
@@ -959,6 +1044,14 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 			IssueLabel: s.cfg.IssueLabel(sess.Issue),
 			IssueURL:   s.cfg.IssueURL(sess.Issue),
 		}
+		// What somebody saw, while it is still worth showing. An expired
+		// observation is not carried at all: a reader given a stale reading and
+		// left to date it is the defect this answers, one level up.
+		if s.live(sess) {
+			row.Observed = sess.ObservedStatus
+			row.ObservedBy = sess.ObservedBy
+			row.ObservedAt = sess.ObservedAt
+		}
 		// The pause holds only while the session it names still declares the
 		// issue it was waiting for. When that session moves on — or retires —
 		// it lifts itself, exactly as waiting-on-you lifts when the PO answers.
@@ -984,6 +1077,11 @@ func (s *Server) rows(sessions []store.Session, open ...[]store.Event) []Session
 		default:
 			row.State = RowWorking
 		}
+		// Only a row claiming progress can be contradicted. The other three
+		// already say nothing is advancing, and an observation of idleness on
+		// one of them is true and pointless.
+		row.ObservedContradicts = row.State == RowWorking &&
+			row.Observed != "" && row.Observed != sess.Status
 		out = append(out, row)
 	}
 	return out

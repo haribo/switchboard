@@ -36,6 +36,7 @@ const usage = `switchboard — coordination for parallel sessions
   withdraw close an open ask that turned out not to need an answer
   explain  say the same thing in plain words, when the PO asks for it
   retire   remove a session's row from the table
+  observed report what you saw of another session
   watch    the grouped signal: one line when a batch needs handling
   db       look after the database: status, backup, migrate
   version  what this binary is
@@ -75,6 +76,8 @@ func Run(args []string) int {
 		err = explain(args[1:])
 	case "retire":
 		err = retire(args[1:])
+	case "observed":
+		err = observed(args[1:])
 	case "watch":
 		err = watch(args[1:])
 	case "db":
@@ -220,6 +223,9 @@ func serve(args []string) error {
 		"how long an answer can be taken back")
 	fs.DurationVar(&cfg.QuietAfter, "quiet-after", envDuration("QUIET_AFTER", cfg.QuietAfter),
 		"how long a session may say nothing before the table marks it")
+	fs.DurationVar(&cfg.ObservationValidFor, "observation-valid-for",
+		envDuration("OBSERVATION_VALID_FOR", cfg.ObservationValidFor),
+		"how long what somebody saw of a session is still worth showing")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
@@ -236,8 +242,9 @@ func serve(args []string) error {
 	// overwritten by an upgrade, so a dropped setting survives in it silently.
 	reportStraySettings(os.Environ(), os.Stdout)
 	fmt.Printf("listening on http://%s — database %s (schema %d)\n", *addr, *db, store.SchemaTarget())
-	fmt.Printf("batching %s, floor %s, blocked %s, undo %s, quiet after %s\n",
-		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow, cfg.QuietAfter)
+	fmt.Printf("batching %s, floor %s, blocked %s, undo %s, quiet after %s, observation valid %s\n",
+		cfg.Wake.Debounce, cfg.Wake.MinInterval, cfg.Wake.Urgent, cfg.UndoWindow,
+		cfg.QuietAfter, cfg.ObservationValidFor)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -315,6 +322,40 @@ func retire(args []string) error {
 		return err
 	}
 	fmt.Printf("%s retired — its events are kept\n", name)
+	return nil
+}
+
+// observed reports what this caller saw of another session — see ADR-0008.
+//
+// It is named for what it records, not for an action: "observed acme-dev3 idle"
+// is a reading, and a caller is meant to feel it as one. The observation sits
+// beside that session's own declaration and never replaces it.
+func observed(args []string) error {
+	fs, server := flags("observed")
+	session := fs.String("session", "", "the session you looked at (required)")
+	status := fs.String("status", store.StatusIdle, "what you saw: active or idle")
+	as := fs.String("as", "", "who is reporting (required)")
+	rest := parse(fs, args)
+	name := *session
+	if name == "" && len(rest) == 1 {
+		name = rest[0] // switchboard observed acme-dev3 --status idle --as acme-manager
+	}
+	switch {
+	case name == "":
+		return errors.New("--session is required")
+	case *as == "":
+		return errors.New("--as is required — an observation nobody can be traced to is worth nothing")
+	}
+
+	var out store.Session
+	if _, err := newClient(*server).call(http.MethodPost,
+		"/v1/sessions/"+name+"/observation",
+		map[string]string{"status": *status, "by": *as}, &out); err != nil {
+		return err
+	}
+	// Both readings, side by side, so the caller sees what the row will say —
+	// including that its own reading did not overwrite anything.
+	fmt.Printf("%s: declares %s, you saw %s\n", out.Name, out.Status, out.ObservedStatus)
 	return nil
 }
 
@@ -455,6 +496,19 @@ func quietNote(quiet bool, updated time.Time) string {
 	return "  quiet " + age(updated)
 }
 
+// observedNote is what a row says when somebody saw it doing something other
+// than what it declares.
+//
+// Only when the two disagree, and only on a row claiming progress — the service
+// has already decided that, so the board and the page cannot differ on it. A row
+// that agrees with what was seen has nothing to report.
+func observedNote(s api.SessionRow) string {
+	if !s.ObservedContradicts || s.ObservedAt == nil {
+		return ""
+	}
+	return fmt.Sprintf("  %-14s ↳ %s saw it %s %s", "", s.ObservedBy, s.Observed, age(*s.ObservedAt))
+}
+
 func printBoard(w io.Writer, st api.StateResponse) {
 	fmt.Fprintln(w, "SESSIONS")
 	if len(st.Sessions) == 0 {
@@ -472,6 +526,9 @@ func printBoard(w io.Writer, st api.StateResponse) {
 		line := fmt.Sprintf("  %-14s %-24s %-8s %s",
 			s.Name, state, orDash(s.IssueLabel), age(s.SinceAt))
 		fmt.Fprintln(w, strings.TrimRight(line+quietNote(s.Quiet, s.UpdatedAt), " "))
+		if note := observedNote(s); note != "" {
+			fmt.Fprintln(w, note)
+		}
 	}
 
 	section(w, "NEEDS YOU", st.Waiting, func(e store.Event) {

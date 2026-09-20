@@ -51,6 +51,10 @@ One rule per line where possible.
   issue arrives as its full URL or not at all — resolving a bare number would
   mean naming another repository, and would link to the wrong issue the moment a
   session works somewhere else
+- An observation is what one party saw of another, never authority: it sits
+  beside the declaration, expires, wakes nobody and overrules nothing. Recording
+  one leaves `updated_at` and `since_at` alone, or it would erase the silence it
+  reports on — see `docs/adr/0008-an-observation-sits-beside-the-declaration.md`
 - A description is Markdown, rendered then sanitized, in that order —
   `richtext.Clean` on the way in, see `docs/adr/0004-descriptions-take-a-whitelist.md`
   and `docs/adr/0007-descriptions-are-written-in-markdown.md`. Sanitizing is the
