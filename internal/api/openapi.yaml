@@ -112,6 +112,58 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/sessions/{name}/observation:
+    post:
+      tags: [sessions]
+      operationId: observeSession
+      summary: Report what you saw of another session
+      description: |
+        A session declares where it is, and cannot declare that it has stopped:
+        the last thing a stopped session said was `active`, and its row goes on
+        saying it. The service can only derive silence, which is not evidence —
+        a session on one long foreground command is silent and working.
+
+        Another party can see more. This records what it saw, **beside** the
+        declaration and never in place of it: the row then carries both readings,
+        and the disagreement is the finding.
+
+        - **It is attributed and timestamped**, and expires — ten minutes by
+          default. Past that it is not sent at all, rather than left for a reader
+          to date.
+        - **It is not a sign of life.** `updated_at` and `since_at` are left
+          exactly as the observed session left them; an observation that reset
+          the silence clock would erase what it reports on.
+        - **A session cannot observe itself.** Declaring is what
+          `PUT /v1/sessions/{name}` is for.
+        - **It changes nothing.** No row is retired, nobody is woken, no state
+          is overruled. What to do about the disagreement belongs to the reader.
+
+        Only the two declared statuses can be observed, so the observation is
+        comparable with the declaration word for word.
+      parameters:
+        - $ref: "#/components/parameters/SessionName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ObservationRequest" }
+      responses:
+        "200":
+          description: The session, carrying the observation beside its declaration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: |
+            No session by that name. A session is reported on once it has
+            declared itself — there is no row to show the observation on
+            otherwise, and inventing one would put a session on the PO's table
+            that never said anything.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/events:
     post:
       tags: [events]
@@ -738,6 +790,23 @@ components:
           $ref: "#/components/schemas/Issue"
           examples: ["action bar, label of the primary button"]
 
+    ObservationRequest:
+      type: object
+      required: [status, by]
+      properties:
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+          description: |
+            What was seen. The same two words a session declares, so the
+            observation and the declaration can be compared as they stand.
+        by:
+          type: string
+          description: |
+            Who saw it. An observation nobody can be traced to is worth nothing:
+            an observer can be wrong, and the row names them so the reader can
+            weigh it. It may not be the observed session itself.
+          examples: ["acme-manager"]
+
     Session:
       type: object
       properties:
@@ -763,7 +832,18 @@ components:
         updated_at:
           type: string
           format: date-time
-          description: Last sign of life.
+          description: Last sign of life. An observation does not move it.
+        observed_status:
+          $ref: "#/components/schemas/SessionStatus"
+          description: What somebody else saw, as recorded — with no validity applied.
+        observed_by:
+          type: string
+          description: Who saw it.
+          examples: ["acme-manager"]
+        observed_at:
+          type: string
+          format: date-time
+          description: When they saw it. Absent when nobody has reported on this session.
       required: [name, status, since_at, updated_at]
 
     SessionRow:
@@ -817,6 +897,30 @@ components:
             The service observes that nothing arrived; it cannot know whether the
             session is on one long task or gone, and does not display a
             distinction it has no means of observing.
+        observed:
+          $ref: "#/components/schemas/SessionStatus"
+          description: |
+            What somebody else saw of this session — see
+            `POST /v1/sessions/{name}/observation`. Present **only while it is
+            still within its validity** (`--observation-valid-for`, ten minutes
+            by default): an old reading shown as a current one is the defect this
+            answers, one level up.
+        observed_by:
+          type: string
+          description: Who saw it. An observer can be wrong, so the row names them.
+          examples: ["acme-manager"]
+        observed_at:
+          type: string
+          format: date-time
+          description: When they saw it.
+        observed_contradicts:
+          type: boolean
+          description: |
+            The observation is live, it disagrees with what the session declared,
+            and the row claims progress. This is the service's decision, so the
+            page never has to make it: a row already saying that nothing is
+            advancing — `blocked`, `waiting_on_you`, `waiting_on_peer` — is not
+            contradicted by somebody seeing it idle.
       required: [name, state, since_at, updated_at]
 
     EventRequest:

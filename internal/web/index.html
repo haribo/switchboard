@@ -84,6 +84,23 @@
   .st-working { color: var(--live); }
   .st-idle { color: var(--muted); }
 
+  /* What somebody else saw, when it contradicts what the session declares.
+     It takes no colour of its own: red means blocked and amber means you, and
+     this is neither. What calls out is the line itself — the one row on the
+     table allowed a second line. */
+  .st-observed { color: var(--muted); }
+  /* The warning gets a slot on every row, kept empty where there is nothing to
+     say, so the state icon sits at the same place down the whole column. A
+     column that shifts when one row gains a mark is movement, on the page that
+     must not move. */
+  .c-state .pair { display: flex; align-items: center; justify-content: center; gap: 4px; }
+  .c-state .slot { width: 19px; height: 19px; flex: none; }
+  .c-note .seen {
+    display: block; margin-top: 3px; font-size: 13px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .c-note .seen b { font-weight: 600; color: var(--ink); }
+
   .legend {
     display: flex; flex-wrap: wrap; gap: 6px 20px; padding: 10px 14px 0;
     font-size: 12.5px; color: var(--muted);
@@ -199,6 +216,7 @@
   <symbol id="i-waiting_on_you" viewBox="0 -960 960 960"><path d="M512-40q-82 0-154-37.5T240-182L48-464l19-19q20-21 49.5-24t53.5 14l110 76v-383q0-17 11.5-28.5T320-840q17 0 28.5 11.5T360-800v537L212-366l95 138q35 51 89 79.5T512-120q103 0 175.5-72.5T760-368v-392q0-17 11.5-28.5T800-800q17 0 28.5 11.5T840-760v392q0 137-95.5 232.5T512-40Zm-72-440v-400q0-17 11.5-28.5T480-920q17 0 28.5 11.5T520-880v400h-80Zm160 0v-360q0-17 11.5-28.5T640-880q17 0 28.5 11.5T680-840v360h-80ZM486-300Z"/></symbol>
   <symbol id="i-waiting_on_peer" viewBox="0 -960 960 960"><path d="M320-160h320v-120q0-66-47-113t-113-47q-66 0-113 47t-47 113v120ZM160-80v-80h80v-120q0-61 28.5-114.5T348-480q-51-32-79.5-85.5T240-680v-120h-80v-80h640v80h-80v120q0 61-28.5 114.5T612-480q51 32 79.5 85.5T720-280v120h80v80H160Z"/></symbol>
   <symbol id="i-working" viewBox="0 -960 960 960"><path d="M204-318q-22-38-33-78t-11-82q0-134 93-228t227-94h7l-64-64 56-56 160 160-160 160-56-56 64-64h-7q-100 0-170 70.5T240-478q0 26 6 51t18 49l-60 60ZM481-40 321-200l160-160 56 56-64 64h7q100 0 170-70.5T720-482q0-26-6-51t-18-49l60-60q22 38 33 78t11 82q0 134-93 228t-227 94h-7l64 64-56 56Z"/></symbol>
+  <symbol id="i-observed" viewBox="0 -960 960 960"><path d="M40-120l440-760 440 760H40Zm138-80h604L480-720 178-200Zm302-40q17 0 28.5-11.5T520-280q0-17-11.5-28.5T480-320q-17 0-28.5 11.5T440-280q0 17 11.5 28.5T480-240Zm-40-120h80v-200h-80v200Zm40-100Z"/></symbol>
   <symbol id="i-idle" viewBox="0 -960 960 960"><path d="M360-320h80v-320h-80v320Zm160 0h80v-320h-80v320ZM480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z"/></symbol>
 </svg>
 
@@ -233,6 +251,7 @@
       <span><svg class="ico st-waiting_on_peer"><use href="#i-waiting_on_peer"/></svg> waiting on another session</span>
       <span><svg class="ico st-working"><use href="#i-working"/></svg> working</span>
       <span><svg class="ico st-idle"><use href="#i-idle"/></svg> idle</span>
+      <span><svg class="ico st-observed"><use href="#i-observed"/></svg> somebody saw it doing otherwise</span>
     </div>
   </section>
 
@@ -261,6 +280,7 @@ const LABEL = {
   blocked: "blocked", waiting_on_you: "waiting on you",
   waiting_on_peer: "waiting on another session",
   working: "working", idle: "idle",
+  observed: "somebody saw it doing otherwise",
 };
 let undoWindow = 10;           // seconds; the server sends the real value
 
@@ -270,6 +290,13 @@ function forHuman(iso) {
   if (mins < 60) return `${mins} min`;
   const h = Math.floor(mins / 60), m = mins % 60;
   return m ? `${h}h${String(m).padStart(2, "0")}` : `${h}h`;
+}
+
+// agoHuman is forHuman read as a moment rather than as a duration: "4 min ago",
+// and "just now" left alone, which already says when.
+function agoHuman(iso) {
+  const said = forHuman(iso);
+  return said === "just now" ? said : said + " ago";
 }
 
 // "just now ago" is not English. Anything else takes the suffix.
@@ -370,7 +397,14 @@ function renderSessions(sessions) {
     }
     const [dev, state, issue, note, since] = row.children;
     dev.textContent = s.name;
-    state.replaceChildren(icon(STATES.includes(s.state) ? s.state : "working"));
+    // The declared state, and beside it what somebody else saw when the service
+    // says it contradicts the row. The service decides that, so the page and the
+    // manager's board cannot disagree about which rows need attention.
+    const pair = el("span", "pair");
+    const slot = el("span", "slot");
+    if (s.observed_contradicts) slot.append(icon("observed"));
+    pair.append(icon(STATES.includes(s.state) ? s.state : "working"), slot);
+    state.replaceChildren(pair);
 
     issue.replaceChildren(issueNode(s, el("span", "none", "—")));
 
@@ -388,6 +422,18 @@ function renderSessions(sessions) {
     } else {
       note.textContent = s.detail || "";
       note.title = s.detail || "";
+    }
+
+    // The second line, and the only one on this table: the row says it is
+    // working and somebody saw otherwise. The declaration above is left as it
+    // stands — an observer can be wrong, and a session on one long foreground
+    // command is idle to the outside while genuinely working.
+    if (s.observed_contradicts) {
+      const seen = el("span", "seen");
+      seen.append("↳ ", el("b", null, s.observed_by), ` saw it ${s.observed} ${agoHuman(s.observed_at)}`);
+      seen.title = `${s.observed_by} saw this session ${s.observed}. `
+                 + "The row above is what the session itself declares.";
+      note.append(seen);
     }
 
     // How long it has been on this, and nothing else. Whether anything is still

@@ -1114,3 +1114,179 @@ func rowsByName(h *harness) map[string]map[string]any {
 	}
 	return out
 }
+
+// --- observations (#49) -----------------------------------------------------
+
+// row finds one line of the PO's table by name.
+func row(t *testing.T, po map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, v := range list(po["sessions"]) {
+		r := v.(map[string]any)
+		if r["name"] == name {
+			return r
+		}
+	}
+	t.Fatalf("no row for %s in %v", name, po["sessions"])
+	return nil
+}
+
+// The defect this answers: a session declares `active`, stops, and its row goes
+// on claiming progress. The PO's page must carry both readings.
+func TestAnObservationReachesThePOsTable(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3",
+		map[string]string{"status": "active", "detail": "writing the migration"}, http.StatusOK)
+
+	before := row(t, h.mustDo("GET", "/v1/po", nil, http.StatusOK), "acme-dev3")
+	if before["state"] != RowWorking || before["observed"] != nil {
+		t.Fatalf("before any observation the row is %v", before)
+	}
+
+	*h.now = base.Add(4 * time.Minute)
+	h.mustDo("POST", "/v1/sessions/acme-dev3/observation",
+		map[string]string{"status": "idle", "by": "acme-manager"}, http.StatusOK)
+
+	got := row(t, h.mustDo("GET", "/v1/po", nil, http.StatusOK), "acme-dev3")
+	if got["state"] != RowWorking {
+		t.Fatalf("state = %v, want the declaration left alone at %q", got["state"], RowWorking)
+	}
+	if got["observed"] != store.StatusIdle || got["observed_by"] != "acme-manager" {
+		t.Fatalf("observation = %v by %v, want idle by acme-manager", got["observed"], got["observed_by"])
+	}
+	if got["observed_contradicts"] != true {
+		t.Fatalf("observed_contradicts = %v, want true — the row claims progress and the observer says otherwise", got["observed_contradicts"])
+	}
+	if got["observed_at"] == nil {
+		t.Fatal("the row does not say when it was seen")
+	}
+}
+
+// An observation that agrees with the declaration is not a finding, and must not
+// dress the row up as one.
+func TestAnAgreeingObservationContradictsNothing(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
+	h.mustDo("POST", "/v1/sessions/acme-dev3/observation",
+		map[string]string{"status": "active", "by": "acme-manager"}, http.StatusOK)
+
+	got := row(t, h.mustDo("GET", "/v1/po", nil, http.StatusOK), "acme-dev3")
+	if got["observed"] != store.StatusActive {
+		t.Fatalf("observed = %v, want it carried anyway", got["observed"])
+	}
+	if got["observed_contradicts"] != nil {
+		t.Fatalf("observed_contradicts = %v, want nothing to call out", got["observed_contradicts"])
+	}
+}
+
+// A row already saying that nothing is advancing is not contradicted by somebody
+// seeing it idle: that is true and pointless, and this page only calls out what
+// needs attention.
+func TestARowThatClaimsNoProgressIsNotContradicted(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
+	h.mustDo("POST", "/v1/events", map[string]any{
+		"author": "acme-dev3", "kind": "blocked", "title": "migration fails on the test database",
+	}, http.StatusCreated)
+	h.mustDo("POST", "/v1/sessions/acme-dev3/observation",
+		map[string]string{"status": "idle", "by": "acme-manager"}, http.StatusOK)
+
+	got := row(t, h.mustDo("GET", "/v1/po", nil, http.StatusOK), "acme-dev3")
+	if got["state"] != RowBlocked {
+		t.Fatalf("state = %v, want %q", got["state"], RowBlocked)
+	}
+	if got["observed_contradicts"] != nil {
+		t.Fatalf("observed_contradicts = %v on a blocked row, want nothing", got["observed_contradicts"])
+	}
+}
+
+// An observation says something about now. Past its validity the service stops
+// sending it, rather than leave a reader to date an old reading — which is the
+// defect this whole thing answers, one level up.
+func TestAnExpiredObservationIsNotSent(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
+	h.mustDo("POST", "/v1/sessions/acme-dev3/observation",
+		map[string]string{"status": "idle", "by": "acme-manager"}, http.StatusOK)
+
+	*h.now = base.Add(DefaultConfig.ObservationValidFor + time.Second)
+	got := row(t, h.mustDo("GET", "/v1/po", nil, http.StatusOK), "acme-dev3")
+	for _, k := range []string{"observed", "observed_by", "observed_at", "observed_contradicts"} {
+		if got[k] != nil {
+			t.Fatalf("%s = %v past the validity, want it gone from the row", k, got[k])
+		}
+	}
+	// It is still on record, though: expiry is about what is shown.
+	sess, err := h.st.Session("acme-dev3")
+	if err != nil || sess.ObservedStatus != store.StatusIdle {
+		t.Fatalf("stored observation = %+v (%v), want it kept", sess.ObservedStatus, err)
+	}
+}
+
+// Observing is not the observed session speaking: it must not reset the silence
+// the service derives, or it would erase what it reports on.
+func TestObservingDoesNotQuietenTheRow(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
+
+	*h.now = base.Add(DefaultConfig.QuietAfter + time.Minute)
+	h.mustDo("POST", "/v1/sessions/acme-dev3/observation",
+		map[string]string{"status": "idle", "by": "acme-manager"}, http.StatusOK)
+
+	got := row(t, h.mustDo("GET", "/v1/po", nil, http.StatusOK), "acme-dev3")
+	if got["quiet"] != true {
+		t.Fatalf("quiet = %v, want the silence untouched by an observation", got["quiet"])
+	}
+}
+
+func TestAnObservationIsRefusedWhatItCannotMean(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
+
+	for _, c := range []struct {
+		name string
+		body map[string]string
+		want int
+	}{
+		{"a status that is not one a session declares",
+			map[string]string{"status": "stopped", "by": "acme-manager"}, http.StatusBadRequest},
+		{"nobody to attribute it to",
+			map[string]string{"status": "idle"}, http.StatusBadRequest},
+		{"an observer named something no session can be called",
+			map[string]string{"status": "idle", "by": "acme manager"}, http.StatusBadRequest},
+		{"a session reporting on itself",
+			map[string]string{"status": "idle", "by": "acme-dev3"}, http.StatusBadRequest},
+		{"a session that never declared itself",
+			map[string]string{"status": "idle", "by": "acme-manager"}, http.StatusNotFound},
+	} {
+		path := "/v1/sessions/acme-dev3/observation"
+		if strings.HasPrefix(c.name, "a session that never") {
+			path = "/v1/sessions/acme-dev9/observation"
+		}
+		res, out := h.do("POST", path, c.body)
+		if res.StatusCode != c.want {
+			t.Fatalf("%s: %d (%v), want %d", c.name, res.StatusCode, out, c.want)
+		}
+		if out["error"] == nil || out["error"] == "" {
+			t.Fatalf("%s: refused with no reason (%v)", c.name, out)
+		}
+	}
+	// None of it was recorded.
+	sess, err := h.st.Session("acme-dev3")
+	if err != nil || sess.ObservedStatus != "" {
+		t.Fatalf("observation = %q (%v), want nothing recorded", sess.ObservedStatus, err)
+	}
+}
+
+// The manager's board reads the same table, so it sees the observation too.
+func TestTheBoardCarriesTheObservation(t *testing.T) {
+	h := newHarness(t)
+	h.mustDo("PUT", "/v1/sessions/acme-dev3", map[string]string{"status": "active"}, http.StatusOK)
+	h.mustDo("POST", "/v1/sessions/acme-dev3/observation",
+		map[string]string{"status": "idle", "by": "acme-manager"}, http.StatusOK)
+
+	state := h.mustDo("GET", "/v1/state", nil, http.StatusOK)
+	got := row(t, state, "acme-dev3")
+	if got["observed"] != store.StatusIdle || got["observed_by"] != "acme-manager" {
+		t.Fatalf("the board's row = %v", got)
+	}
+}

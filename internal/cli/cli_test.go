@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"switchboard/internal/api"
 )
 
 // A dev writes "switchboard await 12 --timeout 10m", not the other way round.
@@ -207,5 +209,47 @@ func TestAMissingServiceIsProbedWithoutBlocking(t *testing.T) {
 	o.recovered(at(10 * time.Second))
 	if o.ongoing() {
 		t.Fatal("still probing after the service came back")
+	}
+}
+
+// --- the board's second line (#49) ------------------------------------------
+
+func boardOf(t *testing.T, rows ...api.SessionRow) string {
+	t.Helper()
+	var b strings.Builder
+	printBoard(&b, api.StateResponse{Sessions: rows})
+	return b.String()
+}
+
+// The row keeps its own line, and what somebody saw of it goes underneath —
+// attributed, so the reader can weigh it.
+func TestTheBoardPrintsWhatSomebodySawUnderTheRow(t *testing.T) {
+	seen := time.Now().Add(-3 * time.Minute)
+	out := boardOf(t, api.SessionRow{
+		Name: "acme-dev3", State: api.RowWorking, SinceAt: time.Now().Add(-4 * time.Minute),
+		UpdatedAt: time.Now().Add(-4 * time.Minute),
+		Observed:  "idle", ObservedBy: "acme-manager", ObservedAt: &seen,
+		ObservedContradicts: true,
+	})
+	for _, want := range []string{"acme-dev3", "working", "acme-manager", "saw it idle", "3 min"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("board does not say %q:\n%s", want, out)
+		}
+	}
+	if lines := strings.Count(strings.TrimSpace(out), "\n"); lines != 2 {
+		t.Fatalf("want a header, the row and one line under it:\n%s", out)
+	}
+}
+
+// An observation the service did not flag as contradicting says nothing the row
+// does not already say, and must not take a line.
+func TestTheBoardIsSilentWhenTheObservationAgrees(t *testing.T) {
+	seen := time.Now()
+	out := boardOf(t, api.SessionRow{
+		Name: "acme-dev3", State: api.RowWorking, SinceAt: seen, UpdatedAt: seen,
+		Observed: "active", ObservedBy: "acme-manager", ObservedAt: &seen,
+	})
+	if strings.Contains(out, "acme-manager") {
+		t.Fatalf("an agreeing observation took a line:\n%s", out)
 	}
 }
