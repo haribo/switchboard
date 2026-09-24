@@ -20,7 +20,7 @@ jobs:
     steps:
       - name: Read what kind of bump this is
         id: meta
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
 
       # A major changes a contract, and no green suite makes that a non-decision.
       - name: Arm auto-merge for a minor or patch bump
